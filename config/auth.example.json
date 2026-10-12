@@ -1,0 +1,5 @@
+{
+  "SUPABASE_URL": "",
+  "SUPABASE_PUBLISHABLE_KEY": "",
+  "SUPABASE_WEB_REDIRECT_URL": "http://localhost:3000/"
+}
