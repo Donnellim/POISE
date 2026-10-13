@@ -4,7 +4,8 @@ import 'package:flutter_application_1/dashboard_page.dart';
 import 'package:flutter_application_1/tabs/profile_tab.dart';
 
 void main() {
-  testWidgets('ProfileTab renders all cards, permissions toggles, and action buttons',
+  testWidgets(
+      'ProfileTab renders all cards, permissions toggles, and action buttons',
       (tester) async {
     tester.view.physicalSize = const Size(360, 800);
     tester.view.devicePixelRatio = 1;
@@ -61,8 +62,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(tester.widget<Switch>(switches.first).value, isFalse);
-    expect(
-        find.text('Bluetooth turned off. P.O.I.S.E. device disconnected.'),
+    expect(find.text('Bluetooth turned off. P.O.I.S.E. device disconnected.'),
         findsOneWidget);
 
     // Go to Dashboard Tab
@@ -154,10 +154,12 @@ void main() {
     // Active monitoring restored on Dashboard
     expect(find.text('Device Connected'), findsOneWidget);
     expect(find.text('0°'), findsOneWidget);
-    expect(find.text('Optimal Posture'), findsOneWidget);
+    expect(find.text('PITCH ANGLE'), findsOneWidget);
+    expect(find.text('Optimal Posture'), findsNothing);
   });
 
-  testWidgets('Canceling Bluetooth search in Profile preserves disconnected state',
+  testWidgets(
+      'Canceling Bluetooth search in Profile preserves disconnected state',
       (tester) async {
     tester.view.physicalSize = const Size(360, 800);
     tester.view.devicePixelRatio = 1;
@@ -215,7 +217,8 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Log out?'), findsOneWidget);
-    expect(find.text('Are you sure you would like to log out?'), findsOneWidget);
+    expect(
+        find.text('Are you sure you would like to log out?'), findsOneWidget);
     expect(find.widgetWithText(ElevatedButton, 'Log Out'), findsOneWidget);
     expect(find.widgetWithText(ElevatedButton, 'Cancel'), findsOneWidget);
 

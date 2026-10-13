@@ -5,7 +5,8 @@ import 'package:flutter_application_1/device_check_page.dart';
 import 'package:flutter_application_1/device_setup_page.dart';
 import 'package:flutter_application_1/get_started_page.dart';
 import 'package:flutter_application_1/dashboard_page.dart';
-import 'package:flutter_application_1/sign_in_email_page.dart';
+import 'package:flutter_application_1/sign_in_page.dart';
+import 'package:flutter_application_1/create_account_page.dart';
 import 'package:flutter_application_1/sign_up_page.dart';
 import 'package:flutter_application_1/widgets/guest_account_prompt.dart';
 
@@ -37,7 +38,7 @@ void main() {
   }
 
   testWidgets(
-      'Guest No opens disconnected dashboard; sign-in returns to device check',
+      'Guest No opens disconnected dashboard and profile tab shows guest options',
       (tester) async {
     await start(tester, const OptionPage());
     await tester.tap(find.text('Continue as guest'));
@@ -52,38 +53,46 @@ void main() {
             .widget<DashboardPage>(find.byType(DashboardPage))
             .initialBluetoothConnected,
         false);
-    expect(find.byType(GuestAccountPrompt), findsOneWidget);
-    await tester.tap(find.text('Sign In'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Sign In with Email'));
-    await tester.pumpAndSettle();
-    expect(find.byType(SignInEmailPage), findsOneWidget);
-    await tester.ensureVisible(find.widgetWithText(ElevatedButton, 'Sign In'));
-    await tester.tap(find.widgetWithText(ElevatedButton, 'Sign In'));
-    await tester.pumpAndSettle();
-    expect(tester.widget<DeviceCheckPage>(find.byType(DeviceCheckPage)).isGuest,
-        false);
-    for (var i = 0; i < 3; i++) {
-      await tester.tap(find.text('No'));
-      await tester.pumpAndSettle();
-      expect(find.byType(DeviceCheckPage), findsOneWidget);
-      expect(find.byType(DashboardPage), findsNothing);
-    }
     expect(
-        find.textContaining('A P.O.I.S.E. device is required'), findsOneWidget);
-    expect(Navigator.of(tester.element(find.byType(DeviceCheckPage))).canPop(),
-        false);
-    await tester.tap(find.text('Yes'));
+        tester.widget<DashboardPage>(find.byType(DashboardPage)).isGuest, true);
+    expect(find.byType(GuestAccountPrompt), findsNothing);
+
+    // Navigate to Profile tab (the 4th feature tab)
+    await tester.tap(find.byIcon(Icons.person_rounded));
     await tester.pumpAndSettle();
-    expect(find.byType(DeviceSetupPage), findsOneWidget);
-    await tester.tap(find.text('No'));
+
+    // Verify guest-specific UI elements in Profile tab
+    expect(find.text('Guest Account'), findsOneWidget);
+    expect(find.text('Save Your Data'), findsOneWidget);
+    expect(find.textContaining('Sign in or create an account'), findsOneWidget);
+    expect(
+        find.text('Save posture data in local and cloud'), findsOneWidget);
+    expect(
+        find.text('Sync using your email account or personal account'),
+        findsOneWidget);
+    expect(find.widgetWithText(ElevatedButton, 'Create Account'), findsOneWidget);
+    expect(find.widgetWithText(ElevatedButton, 'Sign In'), findsOneWidget);
+    expect(find.text('Exit Guest Mode'), findsOneWidget);
+    expect(find.text('Manage Account'), findsNothing);
+    expect(find.text('Log Out'), findsNothing);
+    expect(find.text('Delete Account'), findsNothing);
+
+    // Test Sign In navigation from Profile tab
+    final signInBtn = find.widgetWithText(ElevatedButton, 'Sign In');
+    await tester.ensureVisible(signInBtn);
     await tester.pumpAndSettle();
-    expect(find.byType(DeviceCheckPage), findsOneWidget);
-    expect(Navigator.of(tester.element(find.byType(DeviceCheckPage))).canPop(),
-        false);
+    await tester.tap(signInBtn);
+    await tester.pumpAndSettle();
+    expect(find.byType(SignInPage), findsOneWidget);
+
+    // Pop back to Profile
+    await tester.tap(find.byIcon(Icons.close));
+    await tester.pumpAndSettle();
+    expect(find.byType(DashboardPage), findsOneWidget);
   });
 
-  testWidgets('Guest setup No preserves guest status; Yes follows normal setup',
+  testWidgets(
+      'Guest setup No preserves guest status; Yes follows normal setup through calibration',
       (tester) async {
     await start(tester, const DeviceCheckPage(isGuest: true));
     for (var i = 0; i < 3; i++) {
@@ -103,7 +112,9 @@ void main() {
     await tester.tap(find.text('Yes'));
     await tester.pumpAndSettle();
     expect(find.byType(GetStartedPage), findsOneWidget);
-    expect(find.byType(GuestAccountPrompt), findsNothing);
+    expect(
+        tester.widget<GetStartedPage>(find.byType(GetStartedPage)).isGuest,
+        true);
     await tester.tap(find.text('Connect to Bluetooth'));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('bluetooth-toggle')));
@@ -116,28 +127,49 @@ void main() {
     await tester.tap(find.text('Proceed to Dashboard'));
     await tester.pumpAndSettle();
     expect(find.byType(DashboardPage), findsOneWidget);
-    expect(find.byType(GuestAccountPrompt), findsNothing);
+    expect(
+        tester.widget<DashboardPage>(find.byType(DashboardPage)).isGuest, true);
+
+    // Check Profile tab for guest options
+    await tester.tap(find.byIcon(Icons.person_rounded));
+    await tester.pumpAndSettle();
+    expect(find.text('Guest Account'), findsOneWidget);
+    expect(find.text('Save Your Data'), findsOneWidget);
   });
 
   testWidgets(
-      'Guest account creation proceeds to non-guest device confirmation',
+      'Guest creates account from Profile tab and proceeds to non-guest device check',
       (tester) async {
     await start(tester, const DeviceCheckPage(isGuest: true));
     await tester.tap(find.text('No'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Create Account'));
+
+    // Navigate to Profile tab
+    await tester.tap(find.byIcon(Icons.person_rounded));
     await tester.pumpAndSettle();
+
+    // Tap Create Account on the guest Profile tab
+    final createBtn = find.widgetWithText(ElevatedButton, 'Create Account');
+    await tester.ensureVisible(createBtn);
+    await tester.pumpAndSettle();
+    await tester.tap(createBtn);
+    await tester.pumpAndSettle();
+    expect(find.byType(CreateAccountPage), findsOneWidget);
+
     await tester.tap(find.text('Sign Up with Email'));
     await tester.pumpAndSettle();
     expect(find.byType(SignUpPage), findsOneWidget);
+
     final create = find.widgetWithText(ElevatedButton, 'Create Account');
     await tester.ensureVisible(create);
     await tester.tap(create);
     await tester.pumpAndSettle();
+
     await tester.tap(find.text('Continue to Device Check'));
     await tester.pumpAndSettle();
     expect(tester.widget<DeviceCheckPage>(find.byType(DeviceCheckPage)).isGuest,
         false);
+
     await tester.tap(find.text('No'));
     await tester.pumpAndSettle();
     expect(find.byType(DashboardPage), findsNothing);
@@ -145,20 +177,57 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('Closing sign-in preserves prompt and guest can return to setup',
+  testWidgets('Guest exit overlay allows cancel and exit to option page',
       (tester) async {
-    await start(
-        tester,
-        const DashboardPage(
-            initialBluetoothConnected: false, requiresAccount: true));
-    await tester.tap(find.text('Sign In'));
+    await start(tester, const DashboardPage(isGuest: true));
+    await tester.tap(find.byIcon(Icons.person_rounded));
     await tester.pumpAndSettle();
-    await tester.tap(find.byIcon(Icons.close));
+
+    // Tap Exit Guest Mode
+    final exitBtn = find.text('Exit Guest Mode');
+    await tester.ensureVisible(exitBtn);
     await tester.pumpAndSettle();
-    expect(find.byType(GuestAccountPrompt), findsOneWidget);
-    await tester.tap(find.text('Back to device check'));
+    await tester.tap(exitBtn);
     await tester.pumpAndSettle();
-    expect(tester.widget<DeviceCheckPage>(find.byType(DeviceCheckPage)).isGuest,
-        true);
+    expect(find.text('Exit Guest Mode?'), findsOneWidget);
+
+    // Cancel dismisses the dialog
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(find.text('Exit Guest Mode?'), findsNothing);
+    expect(find.text('Guest Account'), findsOneWidget);
+
+    // Tap Exit Guest Mode again and confirm Exit
+    await tester.ensureVisible(exitBtn);
+    await tester.pumpAndSettle();
+    await tester.tap(exitBtn);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Exit'));
+    await tester.pumpAndSettle();
+    expect(find.byType(OptionPage), findsOneWidget);
+  });
+
+  testWidgets('Guest Profile fits small screens without overflow',
+      (tester) async {
+    for (final size in [
+      const Size(320, 568),
+      const Size(360, 800),
+      const Size(390, 844),
+    ]) {
+      tester.view.physicalSize = size;
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await tester.pumpWidget(const MaterialApp(
+        home: DashboardPage(isGuest: true),
+      ));
+      await tester.tap(find.byIcon(Icons.person_rounded));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Guest Account'), findsOneWidget);
+      expect(find.text('Save Your Data'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    }
   });
 }

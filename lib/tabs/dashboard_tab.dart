@@ -3,6 +3,8 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../activity_mode.dart';
 import '../widgets/poise_app_bar.dart';
+import '../bluetooth/poise_ble_service.dart';
+import '../notifications/notification_center.dart';
 
 class DashboardTab extends StatefulWidget {
   const DashboardTab({
@@ -37,13 +39,14 @@ class _DashboardTabState extends State<DashboardTab> {
 
   // ── 3. Real-Time Pitch Angle (Degrees from POISE Sensor) ──
   double _pitchAngle = 0.0;
-  String _postureStatus = 'Optimal Posture';
 
   // ── 5. Session Elapsed Timer ──
   bool _isSessionRunning = true;
   int _sessionSeconds = 0;
   Timer? _sessionTimer;
   bool _calibrationDialogOpen = false;
+  StreamSubscription<double>? _blePitchSub;
+  DateTime? _lastAlertNotificationTime;
 
   bool get _canMonitor => _isBluetoothConnected && _isCalibrated;
 
@@ -58,6 +61,22 @@ class _DashboardTabState extends State<DashboardTab> {
       }
     }
     _startTimer();
+
+    _blePitchSub = PoiseBleService.instance.pitchAngleStream.listen((angle) {
+      if (mounted && _canMonitor) {
+        setState(() {
+          _pitchAngle = angle;
+          if (angle.abs() > widget.activeMode.angle) {
+            final now = DateTime.now();
+            if (_lastAlertNotificationTime == null ||
+                now.difference(_lastAlertNotificationTime!) > const Duration(seconds: 30)) {
+              _lastAlertNotificationTime = now;
+              NotificationScope.of(context)?.add(PoiseNoticeType.alert);
+            }
+          }
+        });
+      }
+    });
   }
 
   @override
@@ -105,6 +124,7 @@ class _DashboardTabState extends State<DashboardTab> {
 
   @override
   void dispose() {
+    _blePitchSub?.cancel();
     _sessionTimer?.cancel();
     super.dispose();
   }
@@ -482,11 +502,11 @@ class _DashboardTabState extends State<DashboardTab> {
 
   void _showCalibratedOverlay() {
     if (!_isBluetoothConnected) return;
+    PoiseBleService.instance.setZeroBaseline();
     widget.onBaselineSet?.call();
     setState(() {
       _isCalibrated = true;
       _pitchAngle = 0.0;
-      _postureStatus = 'Optimal Posture';
       _sessionSeconds = 0;
       _isSessionRunning = true;
     });
@@ -745,56 +765,23 @@ class _DashboardTabState extends State<DashboardTab> {
                             letterSpacing: 1,
                           ),
                         ),
-                        const SizedBox(height: 6),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 14, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF388AF6), // Blue pill badge
-                            borderRadius: BorderRadius.circular(12),
-                            boxShadow: const [
-                              BoxShadow(
-                                  color: Colors.black12,
-                                  blurRadius: 4,
-                                  offset: Offset(0, 2)),
-                            ],
-                          ),
-                          child: Text(
-                            _isBluetoothConnected
-                                ? (_isCalibrated
-                                    ? _postureStatus
-                                    : 'Recalibrate Needed')
-                                : '---',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 9,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
                       ],
                     ),
                   ),
 
-                  // 3. Holographic Spine Model (Reflects Live Angle)
+                  // 3. Holographic Spine Model (Standby)
                   Positioned(
                     bottom: 0,
-                    child: Transform.rotate(
-                      angle: _canMonitor
-                          ? (_pitchAngle * math.pi / 180.0) * 0.12
-                          : 0.0,
-                      alignment: Alignment.bottomCenter,
-                      child: Image.asset(
-                        'assets/images/spine_model.png',
-                        height: 182,
-                        fit: BoxFit.contain,
-                        errorBuilder: (context, error, stackTrace) {
-                          return RealTimeSpineTracker(
-                            pitchAngle: _canMonitor ? _pitchAngle : 0.0,
-                            isConnected: _canMonitor,
-                          );
-                        },
-                      ),
+                    child: Image.asset(
+                      'assets/images/spine_model.png',
+                      height: 182,
+                      fit: BoxFit.contain,
+                      errorBuilder: (context, error, stackTrace) {
+                        return RealTimeSpineTracker(
+                          pitchAngle: 0.0,
+                          isConnected: _canMonitor,
+                        );
+                      },
                     ),
                   ),
 
@@ -832,173 +819,155 @@ class _DashboardTabState extends State<DashboardTab> {
         ),
         const SizedBox(height: 10),
 
-        // ── PREDICTIVE FATIGUE ENGINE Card (Read-only Controls Summary) ──
+        // ── Current Mode Card (Read-only Controls Summary) ──
         Container(
           width: double.infinity,
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
             color: const Color(0xFF55BCE0), // Soft teal-blue card
-            borderRadius: BorderRadius.circular(4),
+            borderRadius: BorderRadius.circular(14),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                'PREDICTIVE FATIGUE ENGINE',
+                'CURRENT MODE',
                 style: TextStyle(
                   color: Colors.black87,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w800,
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
                   letterSpacing: 0.5,
                 ),
               ),
               const SizedBox(height: 8),
-              Row(
-                children: [
-                  // Active Mode Sub-card (Read-only)
-                  Expanded(
-                    child: Semantics(
-                      key: const ValueKey('active-mode-summary'),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 8),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFA5DCF2),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Row(
-                          children: [
-                            Container(
-                              width: 34,
-                              height: 34,
-                              decoration: BoxDecoration(
-                                color: const Color(0xFF67D1E0),
-                                borderRadius: BorderRadius.circular(8),
+              IntrinsicHeight(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // Active Mode Sub-card (Read-only)
+                    Expanded(
+                      child: Semantics(
+                        key: const ValueKey('active-mode-summary'),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFA5DCF2),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.center,
+                            children: [
+                              Container(
+                                width: 34,
+                                height: 34,
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF67D1E0),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Icon(widget.activeMode.icon,
+                                    color: Colors.white, size: 20),
                               ),
-                              child: Icon(widget.activeMode.icon,
-                                  color: Colors.white, size: 20),
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  const Text(
-                                    'ACTIVE MODE',
-                                    style: TextStyle(
-                                        color: Colors.black54,
-                                        fontSize: 8.5,
-                                        fontWeight: FontWeight.bold),
-                                  ),
-                                  const SizedBox(height: 2),
-                                  Text(
-                                    _canMonitor
-                                        ? widget.activeMode.label
-                                        : '---',
-                                    style: const TextStyle(
-                                        color: Colors.black,
-                                        fontSize: 15,
-                                        fontWeight: FontWeight.bold),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                ],
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Text(
+                                      'ACTIVE MODE',
+                                      style: TextStyle(
+                                          color: Colors.black54,
+                                          fontSize: 8.5,
+                                          fontWeight: FontWeight.bold),
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      _canMonitor
+                                          ? widget.activeMode.label
+                                          : '---',
+                                      style: const TextStyle(
+                                          color: Colors.black,
+                                          fontSize: 15,
+                                          fontWeight: FontWeight.bold),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ],
+                                ),
                               ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  // Threshold Sub-card (Read-only)
-                  Expanded(
-                    child: Semantics(
-                      key: const ValueKey('threshold-summary'),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 8),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFA5DCF2),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Text(
-                              'TIME-UNDER-TENSION\nTHRESHOLD',
-                              style: TextStyle(
-                                  color: Colors.black54,
-                                  fontSize: 8,
-                                  fontWeight: FontWeight.bold,
-                                  height: 1.1),
-                            ),
-                            const SizedBox(height: 3),
-                            Text(
-                              _canMonitor
-                                  ? widget.activeMode.threshold
-                                  : '--°/--s',
-                              style: const TextStyle(
-                                  color: Colors.black,
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.bold),
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              _canMonitor
-                                  ? 'Limit: ${widget.activeMode.angleRestrictionDisplay} • Forgiveness: ${widget.activeMode.forgivenessTimeDisplay}'
-                                  : 'Limit: --° • Forgiveness: --s',
-                              style: const TextStyle(
-                                  color: Colors.black54,
-                                  fontSize: 7.5,
-                                  fontWeight: FontWeight.w600),
-                            ),
-                          ],
+                    const SizedBox(width: 8),
+                    // Threshold Sub-card (Read-only)
+                    Expanded(
+                      child: Semantics(
+                        key: const ValueKey('threshold-summary'),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFA5DCF2),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Text(
+                                'TIME-UNDER-TENSION\nTHRESHOLD',
+                                style: TextStyle(
+                                    color: Colors.black54,
+                                    fontSize: 8,
+                                    fontWeight: FontWeight.bold,
+                                    height: 1.1),
+                              ),
+                              const SizedBox(height: 3),
+                              Text(
+                                _canMonitor
+                                    ? widget.activeMode.threshold
+                                    : '--°/--s',
+                                style: const TextStyle(
+                                    color: Colors.black,
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.bold),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                _canMonitor
+                                    ? 'Limit: ${widget.activeMode.angleRestrictionDisplay} • Forgiveness: ${widget.activeMode.forgivenessTimeDisplay}'
+                                    : 'Limit: --° • Forgiveness: --s',
+                                style: const TextStyle(
+                                    color: Colors.black54,
+                                    fontSize: 7.5,
+                                    fontWeight: FontWeight.w600),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ],
           ),
         ),
         const SizedBox(height: 10),
 
-        Container(
-          key: const ValueKey('monitoring-status'),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          decoration: BoxDecoration(
-            color: const Color(0xFF55BCE0),
-            borderRadius: BorderRadius.circular(4),
-          ),
-          child: Row(children: [
-            Icon(_canMonitor ? Icons.info_outline : Icons.pause_circle_outline,
-                color: Colors.black87, size: 26),
-            const SizedBox(width: 12),
-            Expanded(
-                child: Text(
-              !_isBluetoothConnected
-                  ? 'Monitoring paused: device disconnected.'
-                  : !_isCalibrated
-                      ? 'Monitoring paused: set zero baseline.'
-                      : _isSessionRunning
-                          ? 'Baseline set. Monitoring session active.'
-                          : 'Monitoring session paused.',
-              style: const TextStyle(fontSize: 10, color: Colors.black),
-            )),
-          ]),
-        ),
-        const SizedBox(height: 10),
-
         // ── Session Elapsed Card ──
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           decoration: BoxDecoration(
             color: const Color(0xFF55BCE0),
-            borderRadius: BorderRadius.circular(4),
+            borderRadius: BorderRadius.circular(14),
           ),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,

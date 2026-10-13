@@ -5,6 +5,7 @@ import 'splash_screen.dart';
 import 'auth/social_auth.dart';
 import 'feedback_preferences.dart';
 import 'device_check_page.dart';
+import 'notifications/local_notification_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -16,6 +17,7 @@ Future<void> main() async {
   );
   await FeedbackPreferences.load();
   await SocialAuth.instance.initialize();
+  await LocalNotificationService.instance.initialize();
   runApp(const PoiseApp());
 }
 

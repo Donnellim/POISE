@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'widgets/gradient_background.dart';
-import 'device_check_page.dart';
+import 'auth/social_auth.dart';
+import 'forgot_password_page.dart';
 
 class SignInEmailPage extends StatefulWidget {
   const SignInEmailPage({super.key});
@@ -14,6 +15,39 @@ class _SignInEmailPageState extends State<SignInEmailPage> {
   final _passwordController = TextEditingController();
   bool _obscurePassword = true;
   bool _rememberMe = false;
+  bool _busy = false;
+
+  Future<void> _signIn() async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      await SocialAuth.instance.signInWithPassword(
+          _emailController.text.trim(), _passwordController.text);
+      // The app's verified auth listener handles navigation.
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(error is SignInFailure
+              ? error.message
+              : 'Could not sign in. Please try again.')));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _forgotPassword() async {
+    final email = await Navigator.of(context).push<String>(MaterialPageRoute(
+      builder: (_) =>
+          ForgotPasswordPage(initialEmail: _emailController.text.trim()),
+    ));
+    if (!mounted || email == null) return;
+    _emailController.text = email;
+    _passwordController.clear();
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+      content:
+          Text('Password reset successfully. Sign in with your new password.'),
+    ));
+  }
 
   @override
   void dispose() {
@@ -193,15 +227,7 @@ class _SignInEmailPageState extends State<SignInEmailPage> {
                           width: buttonWidth,
                           height: 52,
                           child: ElevatedButton(
-                            onPressed: () {
-                              // Navigate to device setup flow
-                              Navigator.of(context).pushAndRemoveUntil(
-                                MaterialPageRoute(
-                                  builder: (_) => const DeviceCheckPage(),
-                                ),
-                                (route) => false,
-                              );
-                            },
+                            onPressed: _busy ? null : _signIn,
                             style: ElevatedButton.styleFrom(
                               backgroundColor: const Color(0xFF4285F4),
                               foregroundColor: Colors.white,
@@ -264,10 +290,7 @@ class _SignInEmailPageState extends State<SignInEmailPage> {
                               ),
                               // Forgot password
                               GestureDetector(
-                                onTap: () {
-                                  // TODO: Handle forgot password
-                                  debugPrint('Forgot password tapped');
-                                },
+                                onTap: _busy ? null : _forgotPassword,
                                 child: Text(
                                   'Forgot password?',
                                   style: TextStyle(
