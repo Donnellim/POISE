@@ -2,10 +2,14 @@ import 'package:flutter/material.dart';
 import 'widgets/gradient_background.dart';
 import 'dashboard_page.dart';
 
+import 'bluetooth/poise_ble_service.dart';
+
 class CalibrationPage extends StatelessWidget {
-  const CalibrationPage({super.key});
+  const CalibrationPage({super.key, this.isGuest = false});
+  final bool isGuest;
 
   void _showCalibratedOverlay(BuildContext context) {
+    PoiseBleService.instance.setZeroBaseline();
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -72,7 +76,10 @@ class CalibrationPage extends StatelessWidget {
                     // Navigate to dashboard and clear all previous routes
                     navigator.pushAndRemoveUntil(
                       MaterialPageRoute(
-                        builder: (_) => const DashboardPage(),
+                        builder: (_) => DashboardPage(
+                          isGuest: isGuest,
+                          initialBluetoothConnected: true,
+                        ),
                       ),
                       (route) => false,
                     );

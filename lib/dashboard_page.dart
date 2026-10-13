@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'notifications/notification_center.dart';
+import 'notifications/local_notification_service.dart';
 import 'feedback_preferences.dart';
 import 'auth/social_auth.dart';
 import 'widgets/guest_account_prompt.dart';
@@ -12,20 +13,24 @@ import 'tabs/profile_tab.dart';
 class DashboardPage extends StatefulWidget {
   const DashboardPage({
     super.key,
+    this.isGuest = false,
     this.requiresAccount = false,
     this.initialBluetoothConnected = true,
     this.bluetoothSearchDuration = const Duration(milliseconds: 1200),
     this.initialNotificationPermissionGranted = true,
     this.initialVibrationEnabled,
     this.initialPhoneNotificationEnabled,
+    this.initialActiveMode = ActivityMode.normal,
   });
 
+  final bool isGuest;
   final bool requiresAccount;
   final bool initialBluetoothConnected;
   final Duration bluetoothSearchDuration;
   final bool initialNotificationPermissionGranted;
   final bool? initialVibrationEnabled;
   final bool? initialPhoneNotificationEnabled;
+  final ActivityMode initialActiveMode;
 
   @override
   State<DashboardPage> createState() => _DashboardPageState();
@@ -37,7 +42,7 @@ class _DashboardPageState extends State<DashboardPage> {
 
   // A running web session can retain state from before modes were shared.
   // Resolve an absent selection before passing it to either tab.
-  ActivityMode? _activeMode;
+  late ActivityMode _activeMode;
   bool _isBluetoothConnected = true;
   bool _triggerRecalibration = false;
 
@@ -48,6 +53,7 @@ class _DashboardPageState extends State<DashboardPage> {
   @override
   void initState() {
     super.initState();
+    _activeMode = widget.initialActiveMode;
     _isBluetoothConnected = widget.initialBluetoothConnected;
     _notificationPermissionGranted =
         widget.initialNotificationPermissionGranted;
@@ -57,6 +63,26 @@ class _DashboardPageState extends State<DashboardPage> {
             : !widget.initialPhoneNotificationEnabled!);
     if (!_notificationPermissionGranted) _vibrationEnabled = true;
     _phoneNotificationEnabled = !_vibrationEnabled;
+
+    _notifications.onNoticeAdded = _dispatchLocalNotification;
+  }
+
+  void _dispatchLocalNotification(PoiseNoticeType type) {
+    if (!_phoneNotificationEnabled || !_notificationPermissionGranted) return;
+
+    if (type == PoiseNoticeType.alert || type == PoiseNoticeType.reminder) {
+      LocalNotificationService.instance.showPostureAlert(
+        title: type.title,
+        body: type.message,
+      );
+    } else if (type == PoiseNoticeType.disconnected ||
+        type == PoiseNoticeType.lowBattery) {
+      LocalNotificationService.instance.showDeviceNotice(
+        id: type.index,
+        title: type.title,
+        body: type.message,
+      );
+    }
   }
 
   @override
@@ -88,6 +114,9 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 
   void _handleNotificationPermissionChanged(bool granted) {
+    if (granted) {
+      LocalNotificationService.instance.requestPermission();
+    }
     setState(() {
       _notificationPermissionGranted = granted;
       if (!granted) {
@@ -113,7 +142,7 @@ class _DashboardPageState extends State<DashboardPage> {
       _handleVibrationChanged(!enabled);
 
   List<Widget> _buildTabs() {
-    final activeMode = _activeMode ?? ActivityMode.study;
+    final activeMode = _activeMode;
     final profile = SocialAuth.instance.user;
     return [
       DashboardTab(
@@ -136,6 +165,7 @@ class _DashboardPageState extends State<DashboardPage> {
         onPhoneNotificationChanged: _handlePhoneNotificationChanged,
         notificationPermissionGranted: _notificationPermissionGranted,
         onRequestNotificationPermission: () {
+          LocalNotificationService.instance.requestPermission();
           setState(() {
             _notificationPermissionGranted = true;
             _phoneNotificationEnabled = true;
@@ -145,10 +175,12 @@ class _DashboardPageState extends State<DashboardPage> {
         },
       ),
       ProfileTab(
-        initialUserName:
-            profile == null ? 'User 1' : (profile.displayName ?? 'POISE User'),
+        isGuest: widget.isGuest && profile == null,
+        initialUserName: profile == null
+            ? (widget.isGuest ? 'Guest User' : 'User 1')
+            : (profile.displayName ?? 'POISE User'),
         initialEmail:
-            profile == null ? 'user1@gmail.com' : (profile.email ?? ''),
+            profile == null ? (widget.isGuest ? '' : 'user1@gmail.com') : (profile.email ?? ''),
         isBluetoothEnabled: _isBluetoothConnected,
         onBluetoothChanged: _handleBluetoothChanged,
         onReconnectSuccess: _handleReconnectFromProfile,

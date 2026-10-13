@@ -189,6 +189,18 @@ class SocialAuth implements SocialAuthClient {
     _profile = null;
   }
 
+  Future<void> signInWithPassword(String email, String password) async {
+    final client = _client;
+    if (client == null) {
+      throw const SignInFailure('Account sign-in is not configured yet.');
+    }
+    try {
+      await client.auth.signInWithPassword(email: email, password: password);
+    } on AuthException catch (error) {
+      throw SignInFailure(error.message);
+    }
+  }
+
   Future<void> dispose() async {
     cancelSignIn();
     await _subscription?.cancel();

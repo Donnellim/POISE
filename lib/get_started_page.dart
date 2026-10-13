@@ -3,7 +3,8 @@ import 'widgets/gradient_background.dart';
 import 'bluetooth_connect_page.dart';
 
 class GetStartedPage extends StatelessWidget {
-  const GetStartedPage({super.key});
+  const GetStartedPage({super.key, this.isGuest = false});
+  final bool isGuest;
 
   @override
   Widget build(BuildContext context) {
@@ -59,7 +60,7 @@ class GetStartedPage extends StatelessWidget {
                   onPressed: () {
                     Navigator.of(context).push(
                       MaterialPageRoute(
-                        builder: (_) => const BluetoothConnectPage(),
+                        builder: (_) => BluetoothConnectPage(isGuest: isGuest),
                       ),
                     );
                   },

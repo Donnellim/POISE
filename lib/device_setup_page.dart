@@ -41,7 +41,7 @@ class DeviceSetupPage extends StatelessWidget {
                         onPressed: () {
                           Navigator.of(context).push(
                             MaterialPageRoute(
-                              builder: (_) => const GetStartedPage(),
+                              builder: (_) => GetStartedPage(isGuest: isGuest),
                             ),
                           );
                         },

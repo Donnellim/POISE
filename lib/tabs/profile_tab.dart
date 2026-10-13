@@ -1,13 +1,18 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../widgets/poise_app_bar.dart';
 import '../auth/social_auth.dart';
 import '../sign_in_page.dart';
+import '../create_account_page.dart';
+import '../option_page.dart';
+import '../bluetooth/poise_ble_service.dart';
 
 /// Profile tab following the mobile interface v2 design.
 class ProfileTab extends StatefulWidget {
   const ProfileTab({
     super.key,
+    this.isGuest = false,
     this.initialUserName = 'User 1',
     this.initialEmail = 'user1@gmail.com',
     this.isBluetoothEnabled,
@@ -18,6 +23,7 @@ class ProfileTab extends StatefulWidget {
     this.onNotificationPermissionChanged,
   });
 
+  final bool isGuest;
   final String initialUserName;
   final String initialEmail;
   final bool? isBluetoothEnabled;
@@ -38,6 +44,8 @@ class _ProfileTabState extends State<ProfileTab> {
   String _email = 'user1@gmail.com';
   String _contactNumber = '';
 
+  bool _isGuest = false;
+  StreamSubscription<AuthProfile>? _authSubscription;
   bool _bluetoothEnabled = true;
   bool _notificationsEnabled = true;
   Timer? _searchTimer;
@@ -45,17 +53,35 @@ class _ProfileTabState extends State<ProfileTab> {
   @override
   void initState() {
     super.initState();
+    _isGuest = widget.isGuest && SocialAuth.instance.user == null;
     final parts = widget.initialUserName.split(' ');
     _firstName = parts.isNotEmpty ? parts.first : 'User';
     _lastName = parts.length > 1 ? parts.sublist(1).join(' ') : '1';
     _email = widget.initialEmail;
     _bluetoothEnabled = widget.isBluetoothEnabled ?? true;
     _notificationsEnabled = widget.isNotificationPermissionGranted ?? true;
+
+    _authSubscription = SocialAuth.instance.incomingSignIns.listen((profile) {
+      if (mounted) {
+        setState(() {
+          _isGuest = false;
+          final pParts = (profile.displayName ?? 'User 1').split(' ');
+          _firstName = pParts.isNotEmpty ? pParts.first : 'User';
+          _lastName = pParts.length > 1 ? pParts.sublist(1).join(' ') : '';
+          _email = profile.email ?? '';
+        });
+      }
+    });
   }
 
   @override
   void didUpdateWidget(ProfileTab oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.isGuest != oldWidget.isGuest) {
+      setState(() {
+        _isGuest = widget.isGuest && SocialAuth.instance.user == null;
+      });
+    }
     if (widget.isBluetoothEnabled != null &&
         widget.isBluetoothEnabled != oldWidget.isBluetoothEnabled) {
       setState(() {
@@ -73,8 +99,186 @@ class _ProfileTabState extends State<ProfileTab> {
 
   @override
   void dispose() {
+    _authSubscription?.cancel();
     _searchTimer?.cancel();
     super.dispose();
+  }
+
+  Future<void> _navigateToCreateAccount() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => const CreateAccountPage(),
+      ),
+    );
+    if (!mounted) return;
+    final user = SocialAuth.instance.user;
+    if (user != null) {
+      setState(() {
+        _isGuest = false;
+        final parts = (user.displayName ?? 'User 1').split(' ');
+        _firstName = parts.isNotEmpty ? parts.first : 'User';
+        _lastName = parts.length > 1 ? parts.sublist(1).join(' ') : '';
+        _email = user.email ?? '';
+      });
+    }
+  }
+
+  Future<void> _navigateToSignIn() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => const SignInPage(),
+      ),
+    );
+    if (!mounted) return;
+    final user = SocialAuth.instance.user;
+    if (user != null) {
+      setState(() {
+        _isGuest = false;
+        final parts = (user.displayName ?? 'User 1').split(' ');
+        _firstName = parts.isNotEmpty ? parts.first : 'User';
+        _lastName = parts.length > 1 ? parts.sublist(1).join(' ') : '';
+        _email = user.email ?? '';
+      });
+    }
+  }
+
+  void _showExitGuestOverlay(BuildContext context) {
+    showDialog<void>(
+      context: context,
+      barrierColor: Colors.black.withValues(alpha: 0.6),
+      builder: (dialogContext) {
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          insetPadding: const EdgeInsets.symmetric(horizontal: 26),
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(24, 28, 24, 24),
+            decoration: BoxDecoration(
+              color: const Color(0xFF45A6B8),
+              borderRadius: BorderRadius.circular(24),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.25),
+                  blurRadius: 18,
+                  offset: const Offset(0, 8),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'Exit Guest Mode?',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Color(0xFF0F1E29),
+                    fontSize: 22,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 14),
+                const Text(
+                  'Your posture history and calibration will not be saved. Sign in or create an account to save your data to local storage and the cloud.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Color(0xFF0F1E29),
+                    fontSize: 13.5,
+                    height: 1.4,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                SizedBox(
+                  width: double.infinity,
+                  height: 44,
+                  child: ElevatedButton(
+                    onPressed: () {
+                      Navigator.pop(dialogContext);
+                      _navigateToCreateAccount();
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF388AF6),
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(22),
+                      ),
+                    ),
+                    child: const Text(
+                      'Save Data (Create Account)',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: SizedBox(
+                        height: 44,
+                        child: ElevatedButton(
+                          onPressed: () {
+                            Navigator.pop(dialogContext);
+                            Navigator.of(context).pushAndRemoveUntil(
+                              MaterialPageRoute<void>(
+                                builder: (_) => const OptionPage(),
+                              ),
+                              (_) => false,
+                            );
+                          },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFFE52222),
+                            foregroundColor: Colors.white,
+                            elevation: 0,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(22),
+                            ),
+                          ),
+                          child: const Text(
+                            'Exit',
+                            style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: SizedBox(
+                        height: 44,
+                        child: ElevatedButton(
+                          onPressed: () => Navigator.pop(dialogContext),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF1E1E1E),
+                            foregroundColor: Colors.white,
+                            elevation: 0,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(22),
+                            ),
+                          ),
+                          child: const Text(
+                            'Cancel',
+                            style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   void _openManageAccount() {
@@ -100,9 +304,10 @@ class _ProfileTabState extends State<ProfileTab> {
     );
   }
 
-  void _handleBluetoothToggle(bool value) {
+  Future<void> _handleBluetoothToggle(bool value) async {
     if (!value) {
       _searchTimer?.cancel();
+      PoiseBleService.instance.disconnect();
       setState(() => _bluetoothEnabled = false);
       widget.onBluetoothChanged?.call(false);
       ScaffoldMessenger.of(context).showSnackBar(
@@ -115,8 +320,61 @@ class _ProfileTabState extends State<ProfileTab> {
         ),
       );
     } else {
+      final isAdapterOn = await PoiseBleService.instance.isBluetoothAdapterOn();
+      if (!isAdapterOn && mounted) {
+        final allowed = await _promptEnablePhoneBluetooth();
+        if (!allowed) {
+          setState(() => _bluetoothEnabled = false);
+          return;
+        }
+      }
       _startBluetoothSearchFlow();
     }
+  }
+
+  Future<bool> _promptEnablePhoneBluetooth() async {
+    return await showDialog<bool>(
+      context: context,
+      barrierDismissible: true,
+      builder: (dialogCtx) => AlertDialog(
+        backgroundColor: const Color(0xFFDCEEF6),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+        title: Row(
+          children: const [
+            Icon(Icons.bluetooth_disabled_rounded, color: Color(0xFF4285F4), size: 28),
+            SizedBox(width: 10),
+            Text(
+              'Turn On Bluetooth',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black),
+            ),
+          ],
+        ),
+        content: const Text(
+          'Bluetooth is turned off in your phone settings.\nPlease enable Bluetooth on your phone to scan for your P.O.I.S.E. monitoring device.',
+          style: TextStyle(fontSize: 13.5, height: 1.4, color: Colors.black87),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(false),
+            child: const Text('Cancel', style: TextStyle(color: Colors.black54)),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              final enabled = await PoiseBleService.instance.requestEnableBluetooth();
+              if (dialogCtx.mounted) {
+                Navigator.of(dialogCtx).pop(enabled || kIsWeb);
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF4285F4),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            ),
+            child: const Text('Turn On'),
+          ),
+        ],
+      ),
+    ) ?? false;
   }
 
   void _handleNotificationToggle(bool value) {
@@ -149,6 +407,7 @@ class _ProfileTabState extends State<ProfileTab> {
 
   void _startBluetoothSearchFlow() {
     _searchTimer?.cancel();
+    PoiseBleService.instance.startScan();
 
     showDialog<void>(
       context: context,
@@ -231,6 +490,7 @@ class _ProfileTabState extends State<ProfileTab> {
                   child: ElevatedButton(
                     onPressed: () {
                       _searchTimer?.cancel();
+                      PoiseBleService.instance.stopScan();
                       Navigator.pop(dialogContext);
                       setState(() => _bluetoothEnabled = false);
                     },
@@ -258,11 +518,21 @@ class _ProfileTabState extends State<ProfileTab> {
       },
     );
 
-    _searchTimer = Timer(widget.bluetoothSearchDuration, () {
+    _searchTimer = Timer(widget.bluetoothSearchDuration, () async {
       if (!mounted) return;
       if (Navigator.of(context, rootNavigator: true).canPop()) {
         Navigator.of(context, rootNavigator: true).pop();
       }
+      final devices = PoiseBleService.instance.discoveredDevices;
+      final target = devices.isNotEmpty
+          ? devices.first
+          : const PoiseDiscoveredDevice(
+              id: 'SIMULATED-001',
+              name: PoiseBleConfig.defaultMockDeviceName,
+              rssi: -60,
+            );
+      await PoiseBleService.instance.connect(target);
+      if (!mounted) return;
       setState(() => _bluetoothEnabled = true);
       widget.onBluetoothChanged?.call(true);
 
@@ -696,63 +966,295 @@ class _ProfileTabState extends State<ProfileTab> {
               ),
               const SizedBox(height: 14),
 
-              // ── User Card ──
-              Container(
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFA2DDF0),
-                  borderRadius: BorderRadius.circular(16),
+              // ── User Card / Guest Card ──
+              if (_isGuest)
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFA2DDF0),
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 48,
+                        height: 48,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF19B2E6).withValues(alpha: 0.3),
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: const Color(0xFF0F1E29),
+                            width: 1.5,
+                          ),
+                        ),
+                        child: const Icon(
+                          Icons.person_outline_rounded,
+                          color: Color(0xFF0F1E29),
+                          size: 30,
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Wrap(
+                              crossAxisAlignment: WrapCrossAlignment.center,
+                              spacing: 8,
+                              runSpacing: 4,
+                              children: [
+                                const Text(
+                                  'Guest Account',
+                                  style: TextStyle(
+                                    color: Color(0xFF0F1E29),
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 2,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF0F1E29),
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
+                                  child: const Text(
+                                    'Guest',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.bold,
+                                      letterSpacing: 0.5,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 3),
+                            const Text(
+                              'Unsaved session • Local & cloud sync disabled',
+                              style: TextStyle(
+                                color: Color(0xFF334A58),
+                                fontSize: 12,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                )
+              else
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFA2DDF0),
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 48,
+                        height: 48,
+                        decoration: const BoxDecoration(
+                          color: Color(0xFF19B2E6),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(
+                          Icons.person,
+                          color: Colors.white,
+                          size: 32,
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              displayName,
+                              style: const TextStyle(
+                                color: Color(0xFF0F1E29),
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              displayEmail,
+                              style: const TextStyle(
+                                color: Color(0xFF334A58),
+                                fontSize: 12.5,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-                child: Row(
-                  children: [
-                    Container(
-                      width: 48,
-                      height: 48,
-                      decoration: const BoxDecoration(
-                        color: Color(0xFF19B2E6),
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(
-                        Icons.person,
-                        color: Colors.white,
-                        size: 32,
-                      ),
+              const SizedBox(height: 10),
+
+              // ── Save Data Card for Guest OR Manage Account for Registered ──
+              if (_isGuest) ...[
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFA2DDF0),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(
+                      color: const Color(0xFF19B2E6),
+                      width: 1.5,
                     ),
-                    const SizedBox(width: 14),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
                         children: [
-                          Text(
-                            displayName,
-                            style: const TextStyle(
-                              color: Color(0xFF0F1E29),
-                              fontSize: 16,
-                              fontWeight: FontWeight.bold,
+                          Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF0F1E29),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: const Icon(
+                              Icons.cloud_sync_rounded,
+                              color: Colors.white,
+                              size: 20,
                             ),
                           ),
-                          const SizedBox(height: 2),
-                          Text(
-                            displayEmail,
-                            style: const TextStyle(
-                              color: Color(0xFF334A58),
-                              fontSize: 12.5,
+                          const SizedBox(width: 12),
+                          const Expanded(
+                            child: Text(
+                              'Save Your Data',
+                              style: TextStyle(
+                                color: Color(0xFF0F1E29),
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                              ),
                             ),
                           ),
                         ],
                       ),
-                    ),
-                  ],
+                      const SizedBox(height: 10),
+                      const Text(
+                        'You are using a guest account. Sign in or create an account with your email or personal account to have your data saved in local storage and the cloud.',
+                        style: TextStyle(
+                          color: Color(0xFF0F1E29),
+                          fontSize: 12.5,
+                          height: 1.4,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: const [
+                          Icon(
+                            Icons.check_circle_rounded,
+                            color: Color(0xFF007A3D),
+                            size: 15,
+                          ),
+                          SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              'Save posture data in local and cloud',
+                              style: TextStyle(
+                                color: Color(0xFF334A58),
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: const [
+                          Icon(
+                            Icons.check_circle_rounded,
+                            color: Color(0xFF007A3D),
+                            size: 15,
+                          ),
+                          SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              'Sync using your email account or personal account',
+                              style: TextStyle(
+                                color: Color(0xFF334A58),
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 14),
+                      SizedBox(
+                        width: double.infinity,
+                        height: 44,
+                        child: ElevatedButton(
+                          onPressed: _navigateToCreateAccount,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF388AF6),
+                            foregroundColor: Colors.white,
+                            elevation: 0,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(22),
+                              side: const BorderSide(
+                                  color: Colors.black, width: 1),
+                            ),
+                          ),
+                          child: const Text(
+                            'Create Account',
+                            style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      SizedBox(
+                        width: double.infinity,
+                        height: 44,
+                        child: ElevatedButton(
+                          onPressed: _navigateToSignIn,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF64A3F2),
+                            foregroundColor: Colors.white,
+                            elevation: 0,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(22),
+                              side: const BorderSide(
+                                  color: Colors.black, width: 1),
+                            ),
+                          ),
+                          child: const Text(
+                            'Sign In',
+                            style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              const SizedBox(height: 10),
-
-              // ── Manage Account Button ──
-              _ProfileRowButton(
-                title: 'Manage Account',
-                onTap: _openManageAccount,
-              ),
-              const SizedBox(height: 10),
+                const SizedBox(height: 10),
+              ] else ...[
+                // ── Manage Account Button ──
+                _ProfileRowButton(
+                  title: 'Manage Account',
+                  onTap: _openManageAccount,
+                ),
+                const SizedBox(height: 10),
+              ],
 
               // ── Permissions Card ──
               Container(
@@ -940,22 +1442,35 @@ class _ProfileTabState extends State<ProfileTab> {
               const SizedBox(height: 10),
 
               // ── Action Buttons ──
-              _ProfileRowButton(
-                title: 'Log Out',
-                onTap: () => _showLogoutOverlay(context),
-              ),
-              const SizedBox(height: 10),
-              _ProfileRowButton(
-                title: 'Delete Account',
-                isDestructive: true,
-                onTap: () => _showDeleteAccountOverlay(context),
-              ),
-              const SizedBox(height: 10),
-              _ProfileRowButton(
-                title: 'Delete All Data',
-                isDestructive: true,
-                onTap: () => _showDeleteDataOverlay(context),
-              ),
+              if (_isGuest) ...[
+                _ProfileRowButton(
+                  title: 'Exit Guest Mode',
+                  onTap: () => _showExitGuestOverlay(context),
+                ),
+                const SizedBox(height: 10),
+                _ProfileRowButton(
+                  title: 'Delete All Data',
+                  isDestructive: true,
+                  onTap: () => _showDeleteDataOverlay(context),
+                ),
+              ] else ...[
+                _ProfileRowButton(
+                  title: 'Log Out',
+                  onTap: () => _showLogoutOverlay(context),
+                ),
+                const SizedBox(height: 10),
+                _ProfileRowButton(
+                  title: 'Delete Account',
+                  isDestructive: true,
+                  onTap: () => _showDeleteAccountOverlay(context),
+                ),
+                const SizedBox(height: 10),
+                _ProfileRowButton(
+                  title: 'Delete All Data',
+                  isDestructive: true,
+                  onTap: () => _showDeleteDataOverlay(context),
+                ),
+              ],
             ],
           ),
         ),

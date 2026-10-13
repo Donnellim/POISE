@@ -52,8 +52,12 @@ class NotificationCenter extends ChangeNotifier {
   List<PoiseNotice> get items => List.unmodifiable(_items);
   bool get hasUnread => _items.any((item) => !item.read);
 
+  /// Optional listener triggered when a new notice is dispatched
+  void Function(PoiseNoticeType)? onNoticeAdded;
+
   void add(PoiseNoticeType type) {
     _items.insert(0, PoiseNotice(type, DateTime.now()));
+    onNoticeAdded?.call(type);
     notifyListeners();
   }
 

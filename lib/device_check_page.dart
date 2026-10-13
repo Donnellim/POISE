@@ -100,7 +100,7 @@ class _DeviceCheckPageState extends State<DeviceCheckPage> {
                                     MaterialPageRoute<void>(
                                       builder: (_) => const DashboardPage(
                                         initialBluetoothConnected: false,
-                                        requiresAccount: true,
+                                        isGuest: true,
                                       ),
                                     ),
                                   );

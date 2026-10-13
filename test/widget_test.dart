@@ -5,6 +5,7 @@ import 'package:flutter_application_1/dashboard_page.dart';
 import 'package:flutter_application_1/calibration_page.dart';
 import 'package:flutter_application_1/tabs/dashboard_tab.dart';
 import 'package:flutter_application_1/tabs/controls_tab.dart';
+import 'package:flutter_application_1/bluetooth_connect_page.dart';
 
 void main() {
   testWidgets('Unset mode defaults safely and selection survives reassembly',
@@ -14,8 +15,8 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     await tester.pumpWidget(const MaterialApp(home: DashboardPage()));
-    expect(find.text('Focus'), findsOneWidget);
-    expect(find.text('10°/1s'), findsOneWidget);
+    expect(find.text('Normal'), findsOneWidget);
+    expect(find.text('15°/2s'), findsOneWidget);
     {
       final reassembly = tester.binding.reassembleApplication();
       await tester.pump();
@@ -89,25 +90,25 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     await tester.pumpWidget(const MaterialApp(home: DashboardPage()));
-    expect(find.text('Focus'), findsOneWidget);
+    expect(find.text('Normal'), findsOneWidget);
 
     await tester.tap(find.byIcon(Icons.tune_rounded));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Normal'));
+    await tester.tap(find.text('Focus'));
     await tester.pumpAndSettle();
-    expect(find.text('Normal Mode'), findsOneWidget);
+    expect(find.text('Focus Mode'), findsOneWidget);
     expect(
         find.text(
-            'For everyday activities and general posture monitoring. Provides balanced posture monitoring for typical daily activities while allowing normal movements.'),
+            'For studying, reading, and other focused academic activities. Uses a more sensitive posture setting to help you stay aware of forward-leaning posture during prolonged study sessions.'),
         findsOneWidget);
     await tester.tap(find.text('Cancel'));
     await tester.pumpAndSettle();
 
     await tester.tap(find.byIcon(Icons.home_filled));
     await tester.pumpAndSettle();
-    // Mode should still be Focus
-    expect(find.text('Focus'), findsOneWidget);
-    expect(find.text('10°/1s'), findsOneWidget);
+    // Mode should still be Normal
+    expect(find.text('Normal'), findsOneWidget);
+    expect(find.text('15°/2s'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -232,10 +233,9 @@ void main() {
       await tester.pump();
       expect(tester.takeException(), isNull);
       final reading = tester.getRect(find.text('0°'));
-      final badge = tester.getRect(find.text('Optimal Posture'));
       final model = tester.getRect(find.byType(Image).first);
-      expect(reading.bottom, lessThan(badge.top));
-      expect(badge.bottom, lessThan(model.top));
+      expect(reading.bottom, lessThan(model.top));
+      expect(find.text('Optimal Posture'), findsNothing);
       expect(
           find.descendant(
               of: find.byType(DashboardTab), matching: find.byType(Scrollable)),
@@ -244,11 +244,30 @@ void main() {
       expect(tester.getRect(session).bottom,
           lessThan(tester.getRect(find.byIcon(Icons.home_filled)).top));
       final headerBeforeDrag = tester.getTopLeft(find.text('P.O.I.S.E.'));
-      await tester.drag(find.byKey(const ValueKey('monitoring-status')),
+      await tester.drag(find.byKey(const ValueKey('active-mode-summary')),
           const Offset(0, -150));
       await tester.pump();
       expect(tester.getTopLeft(find.text('P.O.I.S.E.')), headerBeforeDrag);
       await tester.pumpWidget(const SizedBox());
     });
   }
+
+  testWidgets('BluetoothConnectPage toggle enables scan and renders without Material assertion',
+      (tester) async {
+    tester.view.physicalSize = const Size(360, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(const MaterialApp(home: BluetoothConnectPage()));
+    expect(find.byKey(const Key('bluetooth-toggle')), findsOneWidget);
+
+    // Toggle Bluetooth ON
+    await tester.tap(find.byKey(const Key('bluetooth-toggle')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
 }
