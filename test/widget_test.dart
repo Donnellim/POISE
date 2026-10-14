@@ -1,3 +1,5 @@
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_application_1/bluetooth/poise_ble_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_application_1/activity_mode.dart';
@@ -8,6 +10,15 @@ import 'package:flutter_application_1/tabs/controls_tab.dart';
 import 'package:flutter_application_1/bluetooth_connect_page.dart';
 
 void main() {
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+    PoiseBleService.instance.resetForTesting();
+    PoiseBleService.instance.simulateForTesting = true;
+  });
+  tearDown(() {
+    PoiseBleService.instance.resetForTesting();
+    PoiseBleService.instance.simulateForTesting = false;
+  });
   testWidgets('Unset mode defaults safely and selection survives reassembly',
       (tester) async {
     tester.view.physicalSize = const Size(360, 800);
@@ -28,9 +39,9 @@ void main() {
 
     await tester.tap(find.byIcon(Icons.tune_rounded));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Gaming'));
+    await tester.tap(find.text(ActivityMode.leisure.label));
     await tester.pumpAndSettle();
-    expect(find.text('Gaming Mode'), findsOneWidget);
+    expect(find.text(ActivityMode.leisure.overlayTitle), findsOneWidget);
     await tester.tap(find.text('Select'));
     await tester.pumpAndSettle();
     {
@@ -42,7 +53,7 @@ void main() {
     await tester.pump();
     await tester.tap(find.byIcon(Icons.home_filled));
     await tester.pumpAndSettle();
-    expect(find.text('Gaming'), findsOneWidget);
+    expect(find.text(ActivityMode.leisure.label), findsOneWidget);
     expect(find.text('20°/3s'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
@@ -133,60 +144,50 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets(
-      'Reconnect requires a new baseline and cancel cannot resume readings',
+  testWidgets('Dashboard Bluetooth reconnects without leaving the dashboard',
       (tester) async {
     tester.view.physicalSize = const Size(360, 800);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
+    final ble = PoiseBleService.instance;
+    const device =
+        PoiseDiscoveredDevice(id: 'SIMULATED-TEST', name: 'POISE', rssi: -60);
+    await ble.connect(device);
     await tester.pumpWidget(const MaterialApp(home: DashboardPage()));
-    await tester.tap(find.text('Device Connected'));
+    await tester.pump(const Duration(seconds: 2));
+    await ble.disconnect();
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Disconnect Device'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Recalibrate'));
-    await tester.pump();
-    expect(find.text('Set Zero Baseline'), findsNothing);
-    await tester.tap(find.text('Not Connected'));
-    await tester.pumpAndSettle();
-    expect(find.text('Set Zero Baseline'), findsOneWidget);
-    expect(find.text('--°'), findsOneWidget);
-    await tester.tap(find.text('Cancel'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('session-toggle')));
+    expect(find.text('Not Connected'), findsOneWidget);
     await tester.pump(const Duration(seconds: 5));
     expect(find.text('00:00:00'), findsOneWidget);
-    expect(find.text('--°'), findsOneWidget);
-    expect(find.text('--°/--s'), findsOneWidget);
-    await tester.tap(find.byIcon(Icons.tune_rounded));
+    await tester.tap(find.text('Not Connected'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Gaming'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Select'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byIcon(Icons.home_filled));
-    await tester.pumpAndSettle();
-    expect(find.text('--°'), findsOneWidget);
-    await tester.tap(find.text('Recalibrate'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Set Zero Baseline'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Done'));
-    await tester.pumpAndSettle();
-    expect(find.text('0°'), findsOneWidget);
-    expect(find.text('Gaming'), findsOneWidget);
-    expect(find.text('20°/3s'), findsOneWidget);
+    expect(find.byType(BluetoothConnectPage), findsNothing);
+    expect(Navigator.of(tester.element(find.byType(DashboardTab))).canPop(),
+        false);
+    expect(find.text('Device Connected'), findsOneWidget);
+    expect(find.text('Set Your Neutral Posture'), findsNothing);
     await tester.pump(const Duration(seconds: 2));
     expect(find.text('00:00:00'), findsNothing);
-    // Dragging the gauge must never fabricate sensor readings.
-    await tester.dragFrom(
-        tester.getTopLeft(find.byKey(const ValueKey('pitch-gauge'))) +
-            const Offset(20, 70),
-        const Offset(80, 0));
-    await tester.pump();
-    expect(find.text('0°'), findsOneWidget);
-    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('Failed dashboard reconnect stays disconnected and allows retry',
+      (tester) async {
+    await tester.pumpWidget(const MaterialApp(
+      home: DashboardPage(initialBluetoothConnected: false),
+    ));
+    for (var attempt = 0; attempt < 2; attempt++) {
+      await tester.tap(find.text('Not Connected'));
+      await tester.pumpAndSettle();
+      expect(find.byType(BluetoothConnectPage), findsNothing);
+      expect(find.text('Not Connected'), findsOneWidget);
+      expect(find.textContaining('Could not reconnect'), findsOneWidget);
+      expect(find.text('Set Your Neutral Posture'), findsNothing);
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pumpAndSettle();
+    }
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -197,6 +198,11 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
+    await PoiseBleService.instance.connect(const PoiseDiscoveredDevice(
+      id: 'SIMULATED-TEST',
+      name: 'POISE',
+      rssi: -60,
+    ));
     final navigatorKey = GlobalKey<NavigatorState>();
     await tester.pumpWidget(
         MaterialApp(navigatorKey: navigatorKey, home: const DashboardPage()));
@@ -252,7 +258,8 @@ void main() {
     });
   }
 
-  testWidgets('BluetoothConnectPage toggle enables scan and renders without Material assertion',
+  testWidgets(
+      'BluetoothConnectPage toggle enables scan and renders without Material assertion',
       (tester) async {
     tester.view.physicalSize = const Size(360, 800);
     tester.view.devicePixelRatio = 1;

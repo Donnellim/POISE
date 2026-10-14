@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'splash_screen.dart';
 import 'auth/social_auth.dart';
 import 'feedback_preferences.dart';
-import 'device_check_page.dart';
+import 'session_entry_page.dart';
 import 'notifications/local_notification_service.dart';
+import 'database/local_database.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -18,11 +20,24 @@ Future<void> main() async {
   await FeedbackPreferences.load();
   await SocialAuth.instance.initialize();
   await LocalNotificationService.instance.initialize();
-  runApp(const PoiseApp());
+  try {
+    await PoiseLocalDatabase.instance.init();
+  } catch (_) {}
+
+  final prefs = await SharedPreferences.getInstance();
+  final bool oauthInProgress =
+      prefs.getBool('poise.oauth_in_progress') ?? false;
+  if (oauthInProgress) {
+    await prefs.remove('poise.oauth_in_progress');
+  }
+  final bool isOAuthReturn = oauthInProgress || SocialAuth.isOAuthRedirect;
+
+  runApp(PoiseApp(isOAuthReturn: isOAuthReturn));
 }
 
 class PoiseApp extends StatefulWidget {
-  const PoiseApp({super.key});
+  const PoiseApp({super.key, this.isOAuthReturn = false});
+  final bool isOAuthReturn;
 
   @override
   State<PoiseApp> createState() => _PoiseAppState();
@@ -41,7 +56,7 @@ class _PoiseAppState extends State<PoiseApp> {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         _navigator.currentState?.pushAndRemoveUntil(
-          MaterialPageRoute<void>(builder: (_) => const DeviceCheckPage()),
+          MaterialPageRoute<void>(builder: (_) => const SessionEntryPage()),
           (_) => false,
         );
       });
@@ -75,7 +90,9 @@ class _PoiseAppState extends State<PoiseApp> {
         scaffoldBackgroundColor: Colors.black,
         colorSchemeSeed: Colors.blue,
       ),
-      home: const SplashScreen(),
+      home: widget.isOAuthReturn || SocialAuth.isOAuthRedirect
+          ? const SessionEntryPage()
+          : const SplashScreen(),
     );
   }
 }

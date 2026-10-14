@@ -17,7 +17,9 @@ void main() {
       // Should execute without throwing
     });
 
-    test('showPostureAlert and showDeviceNotice execute safely without crashing in test', () async {
+    test(
+        'showPostureAlert and showDeviceNotice execute safely without crashing in test',
+        () async {
       final service = LocalNotificationService.instance;
       await service.showPostureAlert(
         title: 'Posture Alert',
@@ -32,10 +34,10 @@ void main() {
       await service.cancelAll();
     });
 
-    test('requestPermission runs safely in test environment', () async {
+    test('permission failure does not report a grant', () async {
       final service = LocalNotificationService.instance;
       final result = await service.requestPermission();
-      expect(result, isTrue);
+      expect(result, isFalse);
     });
   });
 }

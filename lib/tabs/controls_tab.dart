@@ -453,12 +453,12 @@ class _ControlsTabState extends State<ControlsTab> {
                 children: [
                   Expanded(
                     child: _ModeCard(
-                      icon: ActivityMode.gaming.icon,
-                      title: ActivityMode.gaming.label,
-                      subtitle: ActivityMode.gaming.threshold,
-                      isSelected: widget.selectedMode == ActivityMode.gaming,
-                      onTap: () => _showModeOverlay(ActivityMode.gaming),
-                      onInfoTap: () => _showModeOverlay(ActivityMode.gaming),
+                      icon: ActivityMode.leisure.icon,
+                      title: ActivityMode.leisure.label,
+                      subtitle: ActivityMode.leisure.threshold,
+                      isSelected: widget.selectedMode == ActivityMode.leisure,
+                      onTap: () => _showModeOverlay(ActivityMode.leisure),
+                      onInfoTap: () => _showModeOverlay(ActivityMode.leisure),
                     ),
                   ),
                   const SizedBox(width: 10),

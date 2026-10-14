@@ -2,20 +2,39 @@ import 'package:flutter/material.dart';
 import 'widgets/gradient_background.dart';
 import 'auth/social_auth.dart';
 import 'forgot_password_page.dart';
+import 'session_entry_page.dart';
+import 'sign_in_page.dart';
 
 class SignInEmailPage extends StatefulWidget {
-  const SignInEmailPage({super.key});
+  const SignInEmailPage({super.key, this.initialEmail});
+  final String? initialEmail;
 
   @override
   State<SignInEmailPage> createState() => _SignInEmailPageState();
 }
 
 class _SignInEmailPageState extends State<SignInEmailPage> {
-  final _emailController = TextEditingController();
+  late final TextEditingController _emailController;
   final _passwordController = TextEditingController();
   bool _obscurePassword = true;
   bool _rememberMe = false;
   bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _emailController = TextEditingController(text: widget.initialEmail ?? '');
+  }
+
+  void _handleBack() {
+    if (Navigator.of(context).canPop()) {
+      Navigator.of(context).pop();
+    } else {
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute<void>(builder: (_) => const SignInPage()),
+      );
+    }
+  }
 
   Future<void> _signIn() async {
     if (_busy) return;
@@ -23,7 +42,11 @@ class _SignInEmailPageState extends State<SignInEmailPage> {
     try {
       await SocialAuth.instance.signInWithPassword(
           _emailController.text.trim(), _passwordController.text);
-      // The app's verified auth listener handles navigation.
+      if (!mounted) return;
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute<void>(builder: (_) => const SessionEntryPage()),
+        (_) => false,
+      );
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -63,21 +86,26 @@ class _SignInEmailPageState extends State<SignInEmailPage> {
         screenSize.width > 500 ? 500 : screenSize.width;
     final double buttonWidth = effectiveWidth * 0.8;
 
-    return GradientBackground(
-      child: Scaffold(
-        backgroundColor: Colors.transparent,
-        body: SafeArea(
-          child: Column(
-            children: [
-              // ── Back Button ──
-              Align(
-                alignment: Alignment.topLeft,
-                child: IconButton(
-                  icon: const Icon(Icons.arrow_back,
-                      color: Colors.white, size: 28),
-                  onPressed: () => Navigator.of(context).pop(),
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _handleBack();
+      },
+      child: GradientBackground(
+        child: Scaffold(
+          backgroundColor: Colors.transparent,
+          body: SafeArea(
+            child: Column(
+              children: [
+                // ── Back Button ──
+                Align(
+                  alignment: Alignment.topLeft,
+                  child: IconButton(
+                    icon: const Icon(Icons.arrow_back,
+                        color: Colors.white, size: 28),
+                    onPressed: _handleBack,
+                  ),
                 ),
-              ),
 
               // ── Top Section: Logo + Title ──
               Expanded(
@@ -149,6 +177,8 @@ class _SignInEmailPageState extends State<SignInEmailPage> {
                           child: TextField(
                             controller: _emailController,
                             keyboardType: TextInputType.emailAddress,
+                            autocorrect: false,
+                            enableSuggestions: false,
                             style: const TextStyle(color: Colors.black),
                             decoration: InputDecoration(
                               hintText: 'Email',
@@ -182,6 +212,8 @@ class _SignInEmailPageState extends State<SignInEmailPage> {
                           child: TextField(
                             controller: _passwordController,
                             obscureText: _obscurePassword,
+                            autocorrect: false,
+                            enableSuggestions: false,
                             style: const TextStyle(color: Colors.black),
                             decoration: InputDecoration(
                               hintText: 'Password',
@@ -312,6 +344,7 @@ class _SignInEmailPageState extends State<SignInEmailPage> {
           ),
         ),
       ),
-    );
-  }
+    ),
+  );
+}
 }

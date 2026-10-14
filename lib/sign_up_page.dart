@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'widgets/gradient_background.dart';
-import 'device_check_page.dart';
+import 'auth/social_auth.dart';
+import 'sign_in_email_page.dart';
+import 'sign_in_page.dart';
 
 class SignUpPage extends StatefulWidget {
   const SignUpPage({super.key});
@@ -16,6 +18,7 @@ class _SignUpPageState extends State<SignUpPage> {
   bool _obscurePassword = true;
   bool _obscureConfirm = true;
   bool _allowNotifications = false;
+  bool _isCreating = false;
 
   @override
   void dispose() {
@@ -25,12 +28,70 @@ class _SignUpPageState extends State<SignUpPage> {
     super.dispose();
   }
 
-  void _handleCreateAccount() {
+  Future<void> _handleCreateAccount() async {
+    if (_isCreating) return;
+    final email = _emailController.text.trim();
+    final password = _passwordController.text;
+    final confirm = _confirmPasswordController.text;
+
+    if (email.isEmpty ||
+        !RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(email)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please enter a valid email address'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    final hasLetter = RegExp(r'[a-zA-Z]').hasMatch(password);
+    final hasDigit = RegExp(r'[0-9]').hasMatch(password);
+    if (password.length < 8 || !hasLetter || !hasDigit) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+              'Password must be at least 8 characters long and contain both letters and numbers'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    if (password != confirm) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Passwords do not match'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    setState(() => _isCreating = true);
+    try {
+      await SocialAuth.instance.signUpWithEmail(email, password);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(e is SignInFailure
+              ? e.message
+              : 'Registration failed. Please try again.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      setState(() => _isCreating = false);
+      return;
+    }
+    if (mounted) setState(() => _isCreating = false);
+
+    if (!mounted) return;
     showDialog(
       context: context,
       barrierDismissible: false,
       barrierColor: Colors.black.withValues(alpha: 0.7),
-      builder: (context) => const _RegistrationCompleteDialog(),
+      builder: (context) => _RegistrationCompleteDialog(email: email),
     );
   }
 
@@ -132,6 +193,8 @@ class _SignUpPageState extends State<SignUpPage> {
                             TextField(
                               controller: _emailController,
                               keyboardType: TextInputType.emailAddress,
+                              autocorrect: false,
+                              enableSuggestions: false,
                               style: const TextStyle(
                                   color: Colors.black, fontSize: 15),
                               decoration: InputDecoration(
@@ -164,6 +227,8 @@ class _SignUpPageState extends State<SignUpPage> {
                             TextField(
                               controller: _passwordController,
                               obscureText: _obscurePassword,
+                              autocorrect: false,
+                              enableSuggestions: false,
                               style: const TextStyle(
                                   color: Colors.black, fontSize: 15),
                               decoration: InputDecoration(
@@ -325,7 +390,40 @@ class _SignUpPageState extends State<SignUpPage> {
                                 ),
                               ),
                             ),
-                            const SizedBox(height: 24),
+                            const SizedBox(height: 16),
+
+                            // ── Link to Sign In ──
+                            Wrap(
+                              alignment: WrapAlignment.center,
+                              crossAxisAlignment: WrapCrossAlignment.center,
+                              children: [
+                                Text(
+                                  'Already have an account?  ',
+                                  style: TextStyle(
+                                    color: Colors.black.withValues(alpha: 0.6),
+                                    fontSize: 13,
+                                  ),
+                                ),
+                                GestureDetector(
+                                  onTap: () {
+                                    Navigator.of(context).pushReplacement(
+                                      MaterialPageRoute(
+                                        builder: (_) => const SignInEmailPage(),
+                                      ),
+                                    );
+                                  },
+                                  child: const Text(
+                                    'Sign In',
+                                    style: TextStyle(
+                                      color: Color(0xFF1976D2),
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 16),
                           ],
                         ),
                       ),
@@ -346,7 +444,8 @@ class _SignUpPageState extends State<SignUpPage> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _RegistrationCompleteDialog extends StatelessWidget {
-  const _RegistrationCompleteDialog();
+  const _RegistrationCompleteDialog({this.email});
+  final String? email;
 
   @override
   Widget build(BuildContext context) {
@@ -394,7 +493,7 @@ class _RegistrationCompleteDialog extends StatelessWidget {
 
             // ── Subtitle ──
             const Text(
-              'Your account has been successfully created.',
+              'Your account has been successfully created.\nPlease sign in with your email and password.',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: Colors.black,
@@ -404,7 +503,7 @@ class _RegistrationCompleteDialog extends StatelessWidget {
             ),
             const SizedBox(height: 32),
 
-            // ── Continue to Device Check ──
+            // ── Proceed to Sign In ──
             SizedBox(
               width: double.infinity,
               height: 52,
@@ -412,9 +511,14 @@ class _RegistrationCompleteDialog extends StatelessWidget {
                 onPressed: () {
                   Navigator.of(context).pushAndRemoveUntil(
                     MaterialPageRoute(
-                      builder: (_) => const DeviceCheckPage(),
+                      builder: (_) => const SignInPage(),
                     ),
                     (_) => false,
+                  );
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => SignInEmailPage(initialEmail: email),
+                    ),
                   );
                 },
                 style: ElevatedButton.styleFrom(
@@ -426,7 +530,7 @@ class _RegistrationCompleteDialog extends StatelessWidget {
                   ),
                 ),
                 child: const Text(
-                  'Continue to Device Check',
+                  'Proceed to Sign In',
                   style: TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.bold,

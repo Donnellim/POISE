@@ -49,3 +49,5 @@ app.*.map.json
 
 # Local per-platform OAuth configuration
 config/auth.*.local.json
+config/auth.local.json
+config/oauth_providers.json

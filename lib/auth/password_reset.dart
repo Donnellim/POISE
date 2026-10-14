@@ -1,4 +1,5 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'social_auth.dart';
 
 abstract class PasswordResetClient {
   Future<void> sendCode(String email);
@@ -11,14 +12,25 @@ abstract class PasswordResetClient {
 class SupabasePasswordReset implements PasswordResetClient {
   GoTrueClient? _client;
   bool _verified = false;
+  bool _isSharedAuth = false;
 
   GoTrueClient get _auth {
-    const url = String.fromEnvironment('SUPABASE_URL');
-    const key = String.fromEnvironment('SUPABASE_PUBLISHABLE_KEY');
+    if (_client != null) return _client!;
+    try {
+      final supa = Supabase.instance.client;
+      _isSharedAuth = true;
+      return _client = supa.auth;
+    } catch (_) {}
+    var url = const String.fromEnvironment('SUPABASE_URL');
+    var key = const String.fromEnvironment('SUPABASE_PUBLISHABLE_KEY');
+    if (url.isEmpty) url = SocialAuth.defaultSupabaseUrl;
+    if (key.isEmpty) key = SocialAuth.defaultSupabaseKey;
+    url = SocialAuth.normalizeSupabaseUrl(url);
     if (url.isEmpty || key.isEmpty) {
       throw const AuthException('Password reset is not configured yet.');
     }
-    return _client ??= GoTrueClient(
+    _isSharedAuth = false;
+    return _client = GoTrueClient(
       url: '$url/auth/v1',
       headers: {'apikey': key, 'Authorization': 'Bearer $key'},
       autoRefreshToken: false,
@@ -49,14 +61,16 @@ class SupabasePasswordReset implements PasswordResetClient {
     if (!_verified) throw const AuthException('Verify your email first.');
     await _auth.updateUser(UserAttributes(password: password));
     _verified = false;
-    // Discard this in-memory recovery client; the app remains signed out.
+    // Discard recovery client; the app remains signed out.
     await dispose();
   }
 
   @override
   Future<void> dispose() async {
     _verified = false;
-    _client?.dispose();
+    if (!_isSharedAuth) {
+      _client?.dispose();
+    }
     _client = null;
   }
 }

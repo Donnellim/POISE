@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'widgets/gradient_background.dart';
 import 'dashboard_page.dart';
+import 'device_session.dart';
+import 'notifications/local_notification_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'bluetooth/poise_ble_service.dart';
 
@@ -70,7 +73,15 @@ class CalibrationPage extends StatelessWidget {
                 width: double.infinity,
                 height: 52,
                 child: ElevatedButton(
-                  onPressed: () {
+                  onPressed: () async {
+                    if (!PoiseBleService.instance.isConnected) return;
+                    final permission = await LocalNotificationService.instance
+                        .requestPermission();
+                    final prefs = await SharedPreferences.getInstance();
+                    await prefs.setBool(
+                        'poise.notificationPermission', permission);
+                    await DeviceSession.completeSetup();
+                    if (!context.mounted) return;
                     final navigator = Navigator.of(context);
                     navigator.pop(); // close dialog
                     // Navigate to dashboard and clear all previous routes
@@ -78,7 +89,9 @@ class CalibrationPage extends StatelessWidget {
                       MaterialPageRoute(
                         builder: (_) => DashboardPage(
                           isGuest: isGuest,
-                          initialBluetoothConnected: true,
+                          initialBluetoothConnected:
+                              PoiseBleService.instance.isConnected,
+                          initialNotificationPermissionGranted: permission,
                         ),
                       ),
                       (route) => false,
