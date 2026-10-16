@@ -20,14 +20,14 @@ enum ActivityMode {
     description:
         'For studying, reading, and other focused academic activities. Uses a more sensitive posture setting to help you stay aware of forward-leaning posture during prolonged study sessions.',
   ),
-  gaming(
-    'Gaming',
+  leisure(
+    'Leisure',
     20,
     3,
     Icons.sports_esports_rounded,
-    overlayTitle: 'Gaming Mode',
+    overlayTitle: 'Leisure Mode',
     description:
-        'For gaming and other recreational screen-based activities. Allows more posture movement while still monitoring for sustained forward-leaning posture during longer gaming sessions.',
+        'For leisure and other recreational screen-based activities. Allows more posture movement while still monitoring for sustained forward-leaning posture during longer leisure sessions.',
   ),
   commuting(
     'Commuting',
@@ -58,6 +58,7 @@ enum ActivityMode {
   /// Backwards-compatibility aliases.
   static const ActivityMode defaultMode = normal;
   static const ActivityMode study = focus;
+  static const ActivityMode gaming = leisure;
 
   String get threshold => '$angle°/${seconds}s';
   int get angleRestriction => angle;

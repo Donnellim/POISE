@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../widgets/poise_app_bar.dart';
 import '../auth/social_auth.dart';
 import '../sign_in_page.dart';
@@ -61,6 +62,16 @@ class _ProfileTabState extends State<ProfileTab> {
     _bluetoothEnabled = widget.isBluetoothEnabled ?? true;
     _notificationsEnabled = widget.isNotificationPermissionGranted ?? true;
 
+    final currentUser = SocialAuth.instance.user;
+    if (currentUser != null) {
+      _isGuest = false;
+      final pParts = (currentUser.displayName ?? 'User 1').split(' ');
+      _firstName = pParts.isNotEmpty ? pParts.first : 'User';
+      _lastName = pParts.length > 1 ? pParts.sublist(1).join(' ') : '';
+      _email = currentUser.email ?? _email;
+    }
+    _loadProfile();
+
     _authSubscription = SocialAuth.instance.incomingSignIns.listen((profile) {
       if (mounted) {
         setState(() {
@@ -72,6 +83,19 @@ class _ProfileTabState extends State<ProfileTab> {
         });
       }
     });
+  }
+
+  Future<void> _loadProfile() async {
+    final profile = await SocialAuth.instance.getProfile();
+    if (!mounted || profile == null) return;
+    final name = profile.fullName;
+    if (name != null && name.trim().isNotEmpty) {
+      final parts = name.trim().split(' ');
+      setState(() {
+        _firstName = parts.isNotEmpty ? parts.first : _firstName;
+        _lastName = parts.length > 1 ? parts.sublist(1).join(' ') : '';
+      });
+    }
   }
 
   @override
@@ -305,11 +329,18 @@ class _ProfileTabState extends State<ProfileTab> {
   }
 
   Future<void> _handleBluetoothToggle(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('poise.bluetoothEnabled', value);
     if (!value) {
       _searchTimer?.cancel();
       PoiseBleService.instance.disconnect();
       setState(() => _bluetoothEnabled = false);
       widget.onBluetoothChanged?.call(false);
+      await prefs.setBool('poise.setupComplete', false);
+      await prefs.remove('poise.deviceId');
+      await prefs.remove('poise.deviceName');
+      await prefs.remove('poise.baseline');
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content:
@@ -334,47 +365,57 @@ class _ProfileTabState extends State<ProfileTab> {
 
   Future<bool> _promptEnablePhoneBluetooth() async {
     return await showDialog<bool>(
-      context: context,
-      barrierDismissible: true,
-      builder: (dialogCtx) => AlertDialog(
-        backgroundColor: const Color(0xFFDCEEF6),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
-        title: Row(
-          children: const [
-            Icon(Icons.bluetooth_disabled_rounded, color: Color(0xFF4285F4), size: 28),
-            SizedBox(width: 10),
-            Text(
-              'Turn On Bluetooth',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black),
+          context: context,
+          barrierDismissible: true,
+          builder: (dialogCtx) => AlertDialog(
+            backgroundColor: const Color(0xFFDCEEF6),
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+            title: Row(
+              children: const [
+                Icon(Icons.bluetooth_disabled_rounded,
+                    color: Color(0xFF4285F4), size: 28),
+                SizedBox(width: 10),
+                Text(
+                  'Turn On Bluetooth',
+                  style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.black),
+                ),
+              ],
             ),
-          ],
-        ),
-        content: const Text(
-          'Bluetooth is turned off in your phone settings.\nPlease enable Bluetooth on your phone to scan for your P.O.I.S.E. monitoring device.',
-          style: TextStyle(fontSize: 13.5, height: 1.4, color: Colors.black87),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogCtx).pop(false),
-            child: const Text('Cancel', style: TextStyle(color: Colors.black54)),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              final enabled = await PoiseBleService.instance.requestEnableBluetooth();
-              if (dialogCtx.mounted) {
-                Navigator.of(dialogCtx).pop(enabled || kIsWeb);
-              }
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF4285F4),
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            content: const Text(
+              'Bluetooth is turned off in your phone settings.\nPlease enable Bluetooth on your phone to scan for your P.O.I.S.E. monitoring device.',
+              style:
+                  TextStyle(fontSize: 13.5, height: 1.4, color: Colors.black87),
             ),
-            child: const Text('Turn On'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogCtx).pop(false),
+                child: const Text('Cancel',
+                    style: TextStyle(color: Colors.black54)),
+              ),
+              ElevatedButton(
+                onPressed: () async {
+                  final enabled =
+                      await PoiseBleService.instance.requestEnableBluetooth();
+                  if (dialogCtx.mounted) {
+                    Navigator.of(dialogCtx).pop(enabled || kIsWeb);
+                  }
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF4285F4),
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16)),
+                ),
+                child: const Text('Turn On'),
+              ),
+            ],
           ),
-        ],
-      ),
-    ) ?? false;
+        ) ??
+        false;
   }
 
   void _handleNotificationToggle(bool value) {
@@ -524,21 +565,29 @@ class _ProfileTabState extends State<ProfileTab> {
         Navigator.of(context, rootNavigator: true).pop();
       }
       final devices = PoiseBleService.instance.discoveredDevices;
-      final target = devices.isNotEmpty
-          ? devices.first
-          : const PoiseDiscoveredDevice(
-              id: 'SIMULATED-001',
-              name: PoiseBleConfig.defaultMockDeviceName,
-              rssi: -60,
-            );
-      await PoiseBleService.instance.connect(target);
+      final connected = await PoiseBleService.instance.restoreConnection() ||
+          (devices.isNotEmpty &&
+              await PoiseBleService.instance.connect(devices.first));
+      if (!mounted) return;
+      if (!connected) {
+        setState(() => _bluetoothEnabled = false);
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text(
+              'Unable to connect. Enable Bluetooth and turn on your P.O.I.S.E. device, then try again.'),
+        ));
+        return;
+      }
       if (!mounted) return;
       setState(() => _bluetoothEnabled = true);
       widget.onBluetoothChanged?.call(true);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('poise.bluetoothEnabled', true);
+      await prefs.setBool('poise.setupComplete', true);
+      if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('P.O.I.S.E. device connected! Recalibrating...'),
+          content: Text('P.O.I.S.E. device connected. Monitoring resumed.'),
           behavior: SnackBarBehavior.floating,
           margin: EdgeInsets.only(bottom: 80, left: 16, right: 16),
           duration: Duration(seconds: 2),
@@ -1597,7 +1646,7 @@ class _ManageAccountPageState extends State<ManageAccountPage> {
     super.dispose();
   }
 
-  void _saveChanges() {
+  Future<void> _saveChanges() async {
     final newPass = _newPasswordController.text;
     final currentPass = _currentPasswordController.text;
     final confirmPass = _confirmPasswordController.text;
@@ -1621,10 +1670,57 @@ class _ManageAccountPageState extends State<ManageAccountPage> {
         );
         return;
       }
-      if (newPass.length < 8) {
+      final hasLetter = RegExp(r'[a-zA-Z]').hasMatch(newPass);
+      final hasDigit = RegExp(r'[0-9]').hasMatch(newPass);
+      if (newPass.length < 8 || !hasLetter || !hasDigit) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Password must be at least 8 characters'),
+            content: Text(
+                'Password must be at least 8 characters long and contain both letters and numbers'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
+
+      try {
+        await SocialAuth.instance.updatePassword(
+          currentPassword: currentPass,
+          newPassword: newPass,
+        );
+      } catch (error) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(error is SignInFailure
+                ? error.message
+                : 'Could not update password. Please check your credentials.'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
+    }
+
+    final firstName = _firstNameController.text.trim();
+    final middleName = _middleNameController.text.trim();
+    final lastName = _lastNameController.text.trim();
+    final fullName = [
+      firstName,
+      if (middleName.isNotEmpty) middleName,
+      lastName,
+    ].where((s) => s.isNotEmpty).join(' ');
+
+    if (fullName.isNotEmpty) {
+      try {
+        await SocialAuth.instance.updateProfile(fullName: fullName);
+      } catch (error) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(error is SignInFailure
+                ? error.message
+                : 'Could not update profile: $error'),
             behavior: SnackBarBehavior.floating,
           ),
         );
@@ -1633,18 +1729,21 @@ class _ManageAccountPageState extends State<ManageAccountPage> {
     }
 
     widget.onSaved?.call({
-      'firstName': _firstNameController.text.trim(),
-      'lastName': _lastNameController.text.trim(),
-      'middleName': _middleNameController.text.trim(),
+      'firstName': firstName,
+      'lastName': lastName,
+      'middleName': middleName,
       'email': _emailController.text.trim(),
       'contactNumber': _contactController.text.trim(),
     });
 
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Changes saved successfully'),
+      SnackBar(
+        content: Text(newPass.isNotEmpty
+            ? 'Password and profile updated successfully'
+            : 'Changes saved successfully'),
         behavior: SnackBarBehavior.floating,
-        duration: Duration(seconds: 2),
+        duration: const Duration(seconds: 2),
       ),
     );
 

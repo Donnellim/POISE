@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import '../device_check_page.dart';
+import '../session_entry_page.dart';
 import 'social_auth.dart';
 
 class SocialSignInButtons extends StatefulWidget {
@@ -44,7 +44,7 @@ class _SocialSignInButtonsState extends State<SocialSignInButtons> {
         widget.onAuthenticated!(profile);
       } else {
         Navigator.of(context).pushAndRemoveUntil(
-          MaterialPageRoute<void>(builder: (_) => const DeviceCheckPage()),
+          MaterialPageRoute<void>(builder: (_) => const SessionEntryPage()),
           (_) => false,
         );
       }

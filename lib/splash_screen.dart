@@ -2,11 +2,10 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'widgets/gradient_background.dart';
 import 'walkthrough_page.dart';
-import 'auth/social_auth.dart';
-import 'device_check_page.dart';
 
 class SplashScreen extends StatefulWidget {
-  const SplashScreen({super.key});
+  const SplashScreen({super.key, this.onWalkthroughCompleted});
+  final VoidCallback? onWalkthroughCompleted;
 
   @override
   State<SplashScreen> createState() => _SplashScreenState();
@@ -58,9 +57,7 @@ class _SplashScreenState extends State<SplashScreen>
         Navigator.of(context).pushReplacement(
           PageRouteBuilder(
             pageBuilder: (context, animation, secondaryAnimation) =>
-                SocialAuth.instance.user == null
-                    ? const WalkthroughPage()
-                    : const DeviceCheckPage(),
+                WalkthroughPage(onExplore: widget.onWalkthroughCompleted),
             transitionsBuilder:
                 (context, animation, secondaryAnimation, child) {
               return FadeTransition(opacity: animation, child: child);

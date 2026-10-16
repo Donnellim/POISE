@@ -5,6 +5,11 @@ import '../activity_mode.dart';
 import '../widgets/poise_app_bar.dart';
 import '../bluetooth/poise_ble_service.dart';
 import '../notifications/notification_center.dart';
+import '../database/local_database.dart';
+import '../database/models.dart';
+import '../database/sync_service.dart';
+import '../auth/social_auth.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class DashboardTab extends StatefulWidget {
   const DashboardTab({
@@ -31,6 +36,7 @@ class DashboardTab extends StatefulWidget {
 class _DashboardTabState extends State<DashboardTab> {
   // ── 1. Bluetooth State & Baseline Calibration ──
   bool _isBluetoothConnected = true;
+  bool _isReconnecting = false;
   bool _isCalibrated = true;
 
   // ── 2. Cloud Sync State (Separate & Independent) ──
@@ -47,16 +53,55 @@ class _DashboardTabState extends State<DashboardTab> {
   bool _calibrationDialogOpen = false;
   StreamSubscription<double>? _blePitchSub;
   DateTime? _lastAlertNotificationTime;
+  String? _currentSessionId;
+
+  Future<void> _recordLocalPostureEvent(double angle, DateTime now) async {
+    try {
+      final user = SocialAuth.instance.user;
+      final userId = user?.id ?? 'local_user';
+      final modeId = ModeModel.idForActivityMode(widget.activeMode);
+
+      if (_currentSessionId == null) {
+        _currentSessionId = 'sess_${DateTime.now().millisecondsSinceEpoch}';
+        final prefs = await SharedPreferences.getInstance();
+        final deviceId = prefs.getString('poise.deviceId') ?? 'POISE-BLE-8492';
+        await PoiseLocalDatabase.instance.insertSession(
+          SessionModel(
+            id: _currentSessionId!,
+            deviceId: deviceId,
+            userId: userId,
+            modeId: modeId,
+            startedAt: now,
+            updatedAt: now,
+            synced: false,
+          ),
+        );
+      }
+
+      await PoiseLocalDatabase.instance.insertPostureEvent(
+        PostureEventModel(
+          id: 'evt_${DateTime.now().microsecondsSinceEpoch}',
+          sessionId: _currentSessionId!,
+          occurredAt: now,
+          tiltAngle: angle,
+          durationSec: widget.activeMode.seconds.toDouble(),
+          feedbackTriggered: true,
+          synced: false,
+        ),
+      );
+    } catch (_) {}
+  }
 
   bool get _canMonitor => _isBluetoothConnected && _isCalibrated;
 
   @override
   void initState() {
     super.initState();
+    unawaited(SyncService.instance.restoreFromCloud());
+    _pitchAngle = PoiseBleService.instance.currentPitchAngle;
     if (widget.isBluetoothConnected != null) {
       _isBluetoothConnected = widget.isBluetoothConnected!;
       if (!_isBluetoothConnected) {
-        _isCalibrated = false;
         _isSessionRunning = false;
       }
     }
@@ -69,9 +114,11 @@ class _DashboardTabState extends State<DashboardTab> {
           if (angle.abs() > widget.activeMode.angle) {
             final now = DateTime.now();
             if (_lastAlertNotificationTime == null ||
-                now.difference(_lastAlertNotificationTime!) > const Duration(seconds: 30)) {
+                now.difference(_lastAlertNotificationTime!) >
+                    const Duration(seconds: 30)) {
               _lastAlertNotificationTime = now;
               NotificationScope.of(context)?.add(PoiseNoticeType.alert);
+              _recordLocalPostureEvent(angle, now);
             }
           }
         });
@@ -87,16 +134,13 @@ class _DashboardTabState extends State<DashboardTab> {
       if (widget.isBluetoothConnected == false) {
         setState(() {
           _isBluetoothConnected = false;
-          _isCalibrated = false;
           _isSessionRunning = false;
-          _sessionSeconds = 0;
-          _pitchAngle = 0;
         });
       } else {
         setState(() {
           _isBluetoothConnected = true;
-          _isCalibrated = false;
-          _isSessionRunning = false;
+          _isSessionRunning = _isCalibrated;
+          _pitchAngle = PoiseBleService.instance.currentPitchAngle;
         });
       }
     }
@@ -142,6 +186,7 @@ class _DashboardTabState extends State<DashboardTab> {
   // ─────────────────────────────────────────────────────────────────────────────
 
   void _handleBluetoothTap() {
+    if (_isReconnecting) return;
     if (_isBluetoothConnected) {
       showModalBottomSheet(
         context: context,
@@ -205,12 +250,10 @@ class _DashboardTabState extends State<DashboardTab> {
                 child: ElevatedButton.icon(
                   onPressed: () {
                     Navigator.pop(context);
+                    PoiseBleService.instance.disconnect();
                     setState(() {
                       _isBluetoothConnected = false;
-                      _isCalibrated = false;
                       _isSessionRunning = false;
-                      _sessionSeconds = 0;
-                      _pitchAngle = 0;
                     });
                     widget.onBluetoothChanged?.call(false);
                   },
@@ -231,15 +274,50 @@ class _DashboardTabState extends State<DashboardTab> {
         ),
       );
     } else {
-      setState(() {
-        _isBluetoothConnected = true;
-        _isCalibrated = false;
-        _isSessionRunning = false;
-      });
-      widget.onBluetoothChanged?.call(true);
-
-      _showRecalibrationDialog();
+      _reconnectBluetooth();
     }
+  }
+
+  Future<void> _reconnectBluetooth() async {
+    setState(() => _isReconnecting = true);
+    final ble = PoiseBleService.instance;
+    try {
+      if (!await ble.isBluetoothAdapterOn()) {
+        if (!await ble.requestEnableBluetooth()) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text(
+                  'Turn on Bluetooth in your phone settings, then tap Bluetooth here to reconnect.'),
+            ));
+          }
+          return;
+        }
+      }
+      if (!mounted) return;
+      final connected = await ble.restoreConnection();
+      if (!mounted) return;
+      if (connected) {
+        setState(() {
+          _isBluetoothConnected = true;
+          _isSessionRunning = _isCalibrated;
+          _pitchAngle = ble.currentPitchAngle;
+        });
+        widget.onBluetoothChanged?.call(true);
+      } else {
+        _showReconnectFailure();
+      }
+    } catch (_) {
+      if (mounted) _showReconnectFailure();
+    } finally {
+      if (mounted) setState(() => _isReconnecting = false);
+    }
+  }
+
+  void _showReconnectFailure() {
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+      content: Text(
+          'Could not reconnect to your P.O.I.S.E. device. Make sure it is powered on and nearby, then tap Bluetooth to retry.'),
+    ));
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -326,28 +404,36 @@ class _DashboardTabState extends State<DashboardTab> {
                   onPressed: () async {
                     setModalState(() => _isSyncing = true);
                     setState(() => _isSyncing = true);
-                    await Future.delayed(const Duration(milliseconds: 900));
+                    final success = await SyncService.instance.syncToCloud();
+                    await Future.delayed(const Duration(milliseconds: 300));
                     if (!mounted) return;
                     setState(() {
                       _isSyncing = false;
-                      _isCloudSynced = true;
+                      _isCloudSynced = success;
                     });
                     if (context.mounted) {
                       Navigator.pop(context);
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
-                          backgroundColor: const Color(0xFF0288D1),
+                          backgroundColor: success
+                              ? const Color(0xFF0288D1)
+                              : const Color(0xFFE53935),
                           behavior: SnackBarBehavior.floating,
                           shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(12)),
-                          content: const Row(
+                          content: Row(
                             children: [
-                              Icon(Icons.check_circle_outline,
+                              Icon(
+                                  success
+                                      ? Icons.check_circle_outline
+                                      : Icons.cloud_off_rounded,
                                   color: Colors.white),
-                              SizedBox(width: 10),
+                              const SizedBox(width: 10),
                               Text(
-                                'All posture session logs synced to cloud!',
-                                style: TextStyle(
+                                success
+                                    ? 'All posture session logs synced to cloud!'
+                                    : 'Saved locally. Will sync when cloud is reachable.',
+                                style: const TextStyle(
                                     color: Colors.white,
                                     fontWeight: FontWeight.w600),
                               ),
@@ -382,6 +468,25 @@ class _DashboardTabState extends State<DashboardTab> {
               SizedBox(
                 width: double.infinity,
                 height: 44,
+                child: OutlinedButton.icon(
+                  onPressed: () async {
+                    Navigator.pop(context);
+                    await _generateDemoTelemetryAndSync();
+                  },
+                  icon: const Icon(Icons.science_outlined, size: 20),
+                  label: const Text('Simulate Test Session & Sync'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFF0288D1),
+                    side: const BorderSide(color: Color(0xFF0288D1)),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14)),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              SizedBox(
+                width: double.infinity,
+                height: 44,
                 child: OutlinedButton(
                   onPressed: () {
                     Navigator.pop(context);
@@ -406,6 +511,89 @@ class _DashboardTabState extends State<DashboardTab> {
         ),
       ),
     );
+  }
+
+  Future<void> _generateDemoTelemetryAndSync() async {
+    try {
+      final user = SocialAuth.instance.user;
+      final userId = user?.id ?? 'local_user';
+      final now = DateTime.now();
+
+      // 1. Ensure test device exists
+      const testDeviceId = 'POISE-BLE-8492';
+      await PoiseLocalDatabase.instance.upsertDevice(
+        DeviceModel(
+          id: testDeviceId,
+          userId: userId,
+          deviceName: 'POISE-BLE-8492',
+          pairedAt: now.subtract(const Duration(hours: 1)),
+          lastSeenAt: now,
+          updatedAt: now,
+        ),
+      );
+
+      // 2. Insert a realistic test session
+      final testSessionId = 'sess_demo_${now.millisecondsSinceEpoch}';
+      await PoiseLocalDatabase.instance.insertSession(
+        SessionModel(
+          id: testSessionId,
+          deviceId: testDeviceId,
+          userId: userId,
+          modeId: ModeModel.idForActivityMode(widget.activeMode),
+          startedAt: now.subtract(const Duration(minutes: 30)),
+          endedAt: now,
+          updatedAt: now,
+          synced: false,
+        ),
+      );
+
+      // 3. Insert realistic test posture events
+      final testAngles = [18.5, 21.0, 16.0, 24.2, 19.8];
+      final events = <PostureEventModel>[];
+      for (int i = 0; i < testAngles.length; i++) {
+        events.add(
+          PostureEventModel(
+            id: 'evt_demo_${now.millisecondsSinceEpoch}_$i',
+            sessionId: testSessionId,
+            occurredAt: now.subtract(Duration(minutes: 25 - (i * 5))),
+            tiltAngle: testAngles[i],
+            durationSec: widget.activeMode.seconds.toDouble(),
+            feedbackTriggered: true,
+            synced: false,
+          ),
+        );
+      }
+      await PoiseLocalDatabase.instance.insertPostureEventsBatch(events);
+
+      // 4. Trigger cloud sync
+      setState(() => _isSyncing = true);
+      final success = await SyncService.instance.syncToCloud();
+      if (!mounted) return;
+      setState(() {
+        _isSyncing = false;
+        _isCloudSynced = success;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor:
+              success ? const Color(0xFF0288D1) : const Color(0xFFE53935),
+          behavior: SnackBarBehavior.floating,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          content: Text(
+            success
+                ? 'Test device, session, and 5 posture events synced to Supabase!'
+                : 'Demo data generated locally. Connect cloud to sync.',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not generate test data: $e')),
+      );
+    }
   }
 
   // ── Recalibration Flow: Zero Baseline Dialog ──
@@ -644,7 +832,9 @@ class _DashboardTabState extends State<DashboardTab> {
                           child: Text(
                             _isBluetoothConnected
                                 ? 'Device Connected'
-                                : 'Not Connected',
+                                : (_isReconnecting
+                                    ? 'Reconnecting...'
+                                    : 'Not Connected'),
                             style: TextStyle(
                               color: _isBluetoothConnected
                                   ? const Color(0xFF00C853)

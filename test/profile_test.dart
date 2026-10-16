@@ -1,9 +1,20 @@
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_application_1/bluetooth/poise_ble_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_application_1/dashboard_page.dart';
 import 'package:flutter_application_1/tabs/profile_tab.dart';
 
 void main() {
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+    PoiseBleService.instance.resetForTesting();
+    PoiseBleService.instance.simulateForTesting = true;
+  });
+  tearDown(() {
+    PoiseBleService.instance.resetForTesting();
+    PoiseBleService.instance.simulateForTesting = false;
+  });
   testWidgets(
       'ProfileTab renders all cards, permissions toggles, and action buttons',
       (tester) async {
@@ -103,7 +114,7 @@ void main() {
   });
 
   testWidgets(
-      'Reconnecting Bluetooth in Profile searches for device and goes to Dashboard to recalibrate',
+      'Reconnecting Bluetooth in Profile searches for device and resumes Dashboard without recalibration',
       (tester) async {
     tester.view.physicalSize = const Size(360, 800);
     tester.view.devicePixelRatio = 1;
@@ -139,17 +150,8 @@ void main() {
     await tester.pump(const Duration(milliseconds: 150));
     await tester.pumpAndSettle();
 
-    // Search dialog is gone, navigated to Dashboard tab, recalibration dialog is presented!
     expect(find.text('Searching for P.O.I.S.E. Device'), findsNothing);
-    expect(find.text('Set Your Neutral Posture'), findsOneWidget);
-    expect(find.text('Set Zero Baseline'), findsOneWidget);
-
-    // Complete recalibration
-    await tester.tap(find.text('Set Zero Baseline'));
-    await tester.pumpAndSettle();
-    expect(find.text('Baseline Established!'), findsOneWidget);
-    await tester.tap(find.text('Done'));
-    await tester.pumpAndSettle();
+    expect(find.text('Set Your Neutral Posture'), findsNothing);
 
     // Active monitoring restored on Dashboard
     expect(find.text('Device Connected'), findsOneWidget);

@@ -7,7 +7,8 @@ class LocalNotificationService {
   LocalNotificationService._();
   static final LocalNotificationService instance = LocalNotificationService._();
 
-  final FlutterLocalNotificationsPlugin _plugin = FlutterLocalNotificationsPlugin();
+  final FlutterLocalNotificationsPlugin _plugin =
+      FlutterLocalNotificationsPlugin();
 
   bool _isInitialized = false;
   bool get isInitialized => _isInitialized;
@@ -31,7 +32,8 @@ class LocalNotificationService {
     if (_isInitialized) return true;
 
     try {
-      const androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
+      const androidSettings =
+          AndroidInitializationSettings('@mipmap/ic_launcher');
       const darwinSettings = DarwinInitializationSettings(
         requestAlertPermission: false,
         requestBadgePermission: false,
@@ -46,13 +48,15 @@ class LocalNotificationService {
       final success = await _plugin.initialize(
         settings: initSettings,
         onDidReceiveNotificationResponse: (response) {
-          debugPrint('[LocalNotificationService] User tapped notification: ${response.payload}');
+          debugPrint(
+              '[LocalNotificationService] User tapped notification: ${response.payload}');
         },
       );
 
       // Create Android Notification Channel
-      final androidImplementation = _plugin.resolvePlatformSpecificImplementation<
-          AndroidFlutterLocalNotificationsPlugin>();
+      final androidImplementation =
+          _plugin.resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>();
       if (androidImplementation != null) {
         const channel = AndroidNotificationChannel(
           _channelId,
@@ -83,10 +87,12 @@ class LocalNotificationService {
       }
 
       // 1. Android 13+ (POST_NOTIFICATIONS)
-      final androidImplementation = _plugin.resolvePlatformSpecificImplementation<
-          AndroidFlutterLocalNotificationsPlugin>();
+      final androidImplementation =
+          _plugin.resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>();
       if (androidImplementation != null) {
-        final granted = await androidImplementation.requestNotificationsPermission();
+        final granted =
+            await androidImplementation.requestNotificationsPermission();
         return granted ?? false;
       }
 
@@ -107,7 +113,9 @@ class LocalNotificationService {
       if (!e.toString().contains('LateInitializationError')) {
         debugPrint('[LocalNotificationService] requestPermission error: $e');
       }
-      return true;
+      return kIsWeb ||
+          (defaultTargetPlatform != TargetPlatform.android &&
+              defaultTargetPlatform != TargetPlatform.iOS);
     }
   }
 

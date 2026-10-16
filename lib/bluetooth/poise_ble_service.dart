@@ -1,7 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../device_session.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import '../database/local_database.dart';
+import '../database/models.dart';
 
 /// Configuration for POISE Bluetooth Low Energy (BLE) communication.
 ///
@@ -63,6 +68,78 @@ class PoiseBleService {
   PoiseBleService._();
   static final PoiseBleService instance = PoiseBleService._();
 
+  StreamSubscription<BluetoothAdapterState>? _adapterSubscription;
+  bool _connecting = false;
+
+  @visibleForTesting
+  bool simulateForTesting = false;
+
+  bool get allowsSimulation =>
+      simulateForTesting ||
+      kIsWeb ||
+      (defaultTargetPlatform != TargetPlatform.android &&
+          defaultTargetPlatform != TargetPlatform.iOS) ||
+      const bool.fromEnvironment('POISE_DEMO');
+
+  void _watchAdapter() {
+    if (allowsSimulation || _adapterSubscription != null) return;
+    _adapterSubscription = adapterStateStream.listen((state) {
+      if (state == BluetoothAdapterState.off ||
+          state == BluetoothAdapterState.turningOff ||
+          state == BluetoothAdapterState.unauthorized) {
+        _handleDisconnection();
+        unawaited(DeviceSession.shouldResume(adapterOn: false));
+      }
+    });
+  }
+
+  Future<bool> restoreConnection() async {
+    _watchAdapter();
+    if (isConnected) return true;
+    if (!await isBluetoothAdapterOn()) return false;
+    final prefs = await SharedPreferences.getInstance();
+    final id = prefs.getString('poise.deviceId');
+    if (id == null) return false;
+    _zeroBaselineOffset = prefs.getDouble('poise.baseline') ?? 0;
+    return connect(PoiseDiscoveredDevice(
+      id: id,
+      name: prefs.getString('poise.deviceName') ?? 'P.O.I.S.E.',
+      rssi: 0,
+      rawDevice: id.startsWith('SIMULATED-') && allowsSimulation
+          ? null
+          : BluetoothDevice.fromId(id),
+    ));
+  }
+
+  Future<void> _rememberDevice(PoiseDiscoveredDevice device) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('poise.deviceId', device.id);
+    await prefs.setString('poise.deviceName', device.name);
+
+    if (simulateForTesting) return;
+    try {
+      final now = DateTime.now();
+      String userId = 'local_user';
+      try {
+        final session = Supabase.instance.client.auth.currentSession;
+        if (session != null && !session.isExpired) {
+          userId = session.user.id;
+        }
+      } catch (_) {}
+
+      await PoiseLocalDatabase.instance.upsertDevice(
+        DeviceModel(
+          id: device.id,
+          userId: userId,
+          deviceName: device.name,
+          pairedAt: now,
+          lastSeenAt: now,
+          updatedAt: now,
+        ),
+      );
+    } catch (_) {}
+  }
+
   // ── State streams ──
   final _connectionStateController =
       StreamController<PoiseBleState>.broadcast();
@@ -119,25 +196,31 @@ class PoiseBleService {
   /// Check whether the phone's physical Bluetooth adapter is turned on.
   Future<bool> isBluetoothAdapterOn() async {
     try {
-      if (kIsWeb) return true; // Web / localhost testing uses simulated BLE flow
+      if (allowsSimulation) return true;
       final supported = await FlutterBluePlus.isSupported;
-      if (!supported) return true; // Unit test/headless/desktop runner fallback
-      final state = await FlutterBluePlus.adapterState.first;
+      if (!supported) return false;
+      final state = await FlutterBluePlus.adapterState
+          .where((state) => state != BluetoothAdapterState.unknown)
+          .first
+          .timeout(const Duration(seconds: 5));
       return state == BluetoothAdapterState.on;
     } catch (_) {
-      return true; // Graceful fallback
+      return allowsSimulation;
     }
   }
 
   /// Request the OS to turn on the phone's Bluetooth adapter (prompt on Android).
   Future<bool> requestEnableBluetooth() async {
     try {
-      if (kIsWeb) return true; // Web / localhost testing consent granted
+      if (allowsSimulation) return true;
       await FlutterBluePlus.turnOn();
-      final state = await FlutterBluePlus.adapterState.first;
+      final state = await FlutterBluePlus.adapterState
+          .where((state) => state != BluetoothAdapterState.unknown)
+          .first
+          .timeout(const Duration(seconds: 5));
       return state == BluetoothAdapterState.on;
     } catch (_) {
-      return true;
+      return false;
     }
   }
 
@@ -151,13 +234,15 @@ class PoiseBleService {
   }
 
   /// Start scanning for nearby POISE devices.
-  Future<void> startScan({Duration timeout = const Duration(seconds: 4)}) async {
+  Future<void> startScan(
+      {Duration timeout = const Duration(seconds: 4)}) async {
+    _watchAdapter();
     _discoveredDevices.clear();
     _scanResultsController.add(_discoveredDevices);
     _setState(PoiseBleState.scanning);
 
     final supported = await isBleSupported();
-    if (!supported) {
+    if (!supported && allowsSimulation) {
       // Hardware unavailable (or unit test/desktop environment):
       // Gracefully simulate discovering the POISE device so the app is always testable.
       _discoveredDevices.add(const PoiseDiscoveredDevice(
@@ -179,11 +264,13 @@ class PoiseBleService {
           final effectiveName = advName.isNotEmpty ? advName : devName;
 
           final matchesPrefix = PoiseBleConfig.deviceNamePrefixes.any(
-            (prefix) => effectiveName.toUpperCase().contains(prefix.toUpperCase()),
+            (prefix) =>
+                effectiveName.toUpperCase().contains(prefix.toUpperCase()),
           );
 
-          if (matchesPrefix || effectiveName.isNotEmpty) {
-            final exists = _discoveredDevices.any((d) => d.id == result.device.remoteId.str);
+          if (matchesPrefix) {
+            final exists = _discoveredDevices
+                .any((d) => d.id == result.device.remoteId.str);
             if (!exists) {
               _discoveredDevices.add(PoiseDiscoveredDevice(
                 id: result.device.remoteId.str,
@@ -203,15 +290,7 @@ class PoiseBleService {
       await FlutterBluePlus.startScan(timeout: timeout);
     } catch (e) {
       debugPrint('[PoiseBleService] startScan failed: $e');
-      // Fallback to simulated mock device
-      if (_discoveredDevices.isEmpty) {
-        _discoveredDevices.add(const PoiseDiscoveredDevice(
-          id: 'SIMULATED-POISE-001',
-          name: PoiseBleConfig.defaultMockDeviceName,
-          rssi: -60,
-        ));
-        _scanResultsController.add(List.unmodifiable(_discoveredDevices));
-      }
+      _setState(PoiseBleState.disconnected);
     }
   }
 
@@ -228,15 +307,19 @@ class PoiseBleService {
 
   /// Connect to a discovered POISE peripheral.
   Future<bool> connect(PoiseDiscoveredDevice device) async {
+    if (_connecting) return false;
+    if (device.rawDevice == null && !allowsSimulation) return false;
+    _connecting = true;
+    _watchAdapter();
     await stopScan();
     _setState(PoiseBleState.connecting);
 
     if (device.rawDevice == null) {
       // Simulated / Mock connection
       _connectedDeviceName = device.name;
-      _currentPitchAngle = 0.0;
-      _pitchAngleController.add(0.0);
       _setState(PoiseBleState.connected);
+      await _rememberDevice(device);
+      _connecting = false;
       return true;
     }
 
@@ -246,7 +329,7 @@ class PoiseBleService {
     try {
       await _deviceStateSubscription?.cancel();
       _deviceStateSubscription = rawDevice.connectionState.listen((state) {
-        if (state == BluetoothConnectionState.disconnected) {
+        if (state == BluetoothConnectionState.disconnected && isConnected) {
           _handleDisconnection();
         }
       });
@@ -259,13 +342,21 @@ class PoiseBleService {
 
       // Discover GATT services and posture telemetry characteristic
       await _discoverServices(rawDevice);
+      if (!rawDevice.isConnected || !await isBluetoothAdapterOn()) {
+        throw StateError('Device disconnected during setup');
+      }
 
       _setState(PoiseBleState.connected);
+      await _rememberDevice(device);
+      _connecting = false;
       return true;
     } catch (e) {
       debugPrint('[PoiseBleService] Connect error: $e');
+      await rawDevice.disconnect();
       _handleDisconnection();
       return false;
+    } finally {
+      _connecting = false;
     }
   }
 
@@ -276,32 +367,32 @@ class PoiseBleService {
       BluetoothCharacteristic? telemetryChar;
 
       for (final service in services) {
-        final sUuid = service.uuid.toString().toLowerCase();
         for (final char in service.characteristics) {
-          final cUuid = char.uuid.toString().toLowerCase();
-
           // Check if matches configured telemetry characteristic or has notify property
-          if (cUuid == PoiseBleConfig.postureCharacteristicUuid.toLowerCase() ||
-              sUuid == PoiseBleConfig.serviceUuid.toLowerCase()) {
+          if (char.uuid == Guid(PoiseBleConfig.postureCharacteristicUuid) &&
+              service.uuid == Guid(PoiseBleConfig.serviceUuid)) {
             if (char.properties.notify || char.properties.indicate) {
               telemetryChar = char;
             }
           }
 
-          if (cUuid == PoiseBleConfig.calibrationCharacteristicUuid.toLowerCase()) {
+          if (char.uuid == Guid(PoiseBleConfig.calibrationCharacteristicUuid)) {
             _calibrationChar = char;
           }
         }
       }
 
-      if (telemetryChar != null) {
-        await telemetryChar.setNotifyValue(true);
-        await _charValueSubscription?.cancel();
-        _charValueSubscription =
-            telemetryChar.onValueReceived.listen(_handleIncomingTelemetry);
+      if (telemetryChar == null) {
+        throw StateError("POISE telemetry unavailable");
       }
+      await _charValueSubscription?.cancel();
+      _charValueSubscription =
+          telemetryChar.onValueReceived.listen(_handleIncomingTelemetry);
+      await telemetryChar.setNotifyValue(true);
+      if (telemetryChar.properties.read) await telemetryChar.read();
     } catch (e) {
       debugPrint('[PoiseBleService] Service discovery error: $e');
+      rethrow;
     }
   }
 
@@ -311,7 +402,7 @@ class PoiseBleService {
   /// 2. Binary 32-bit Float (IEEE 754, 4 bytes)
   /// 3. Binary 16-bit Signed Integer (degrees * 10 or * 100)
   void _handleIncomingTelemetry(List<int> bytes) {
-    if (bytes.isEmpty) return;
+    if (bytes.isEmpty || (!isConnected && !_connecting)) return;
 
     double? rawAngle;
 
@@ -338,9 +429,10 @@ class PoiseBleService {
       } catch (_) {}
     }
 
-    if (rawAngle != null) {
+    if (rawAngle != null && rawAngle.isFinite) {
       // Calculate effective angle relative to zero baseline calibration
-      final calibratedAngle = (rawAngle - _zeroBaselineOffset).clamp(-60.0, 60.0);
+      final calibratedAngle =
+          (rawAngle - _zeroBaselineOffset).clamp(-60.0, 60.0);
       _currentPitchAngle = calibratedAngle;
       _pitchAngleController.add(calibratedAngle);
     }
@@ -367,8 +459,9 @@ class PoiseBleService {
     _stopMockTelemetryStream();
     _activeDevice = null;
     _connectedDeviceName = null;
-    _currentPitchAngle = 0.0;
-    _pitchAngleController.add(0.0);
+    _charValueSubscription?.cancel();
+    _charValueSubscription = null;
+    _calibrationChar = null;
     _setState(PoiseBleState.disconnected);
   }
 
@@ -378,6 +471,9 @@ class PoiseBleService {
     _zeroBaselineOffset = baselinePitch ?? _currentPitchAngle;
     _currentPitchAngle = 0.0;
     _pitchAngleController.add(0.0);
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble('poise.baseline', _zeroBaselineOffset);
 
     // If connected to hardware, write tare command [0x01] to calibration characteristic
     if (_calibrationChar != null) {
@@ -409,10 +505,10 @@ class PoiseBleService {
     _mockStreamTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
       if (_state == PoiseBleState.connected) {
         step++;
-        final simulatedAngle = (step % 12 == 0)
-            ? 18.0
-            : (step % 6 == 0 ? 8.0 : 2.5);
-        final calibrated = (simulatedAngle - _zeroBaselineOffset).clamp(-60.0, 60.0);
+        final simulatedAngle =
+            (step % 12 == 0) ? 18.0 : (step % 6 == 0 ? 8.0 : 2.5);
+        final calibrated =
+            (simulatedAngle - _zeroBaselineOffset).clamp(-60.0, 60.0);
         _currentPitchAngle = calibrated;
         _pitchAngleController.add(calibrated);
       }
@@ -430,6 +526,9 @@ class PoiseBleService {
   /// Reset internal state for tests or fresh sessions
   void resetForTesting() {
     stopMockTelemetryStream();
+    _adapterSubscription?.cancel();
+    _adapterSubscription = null;
+    _connecting = false;
     _scanSubscription?.cancel();
     _deviceStateSubscription?.cancel();
     _charValueSubscription?.cancel();
@@ -444,6 +543,9 @@ class PoiseBleService {
   /// Release resources
   void dispose() {
     stopMockTelemetryStream();
+    _adapterSubscription?.cancel();
+    _adapterSubscription = null;
+    _connecting = false;
     _scanSubscription?.cancel();
     _deviceStateSubscription?.cancel();
     _charValueSubscription?.cancel();

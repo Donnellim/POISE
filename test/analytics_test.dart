@@ -26,7 +26,7 @@ void main() {
         at: DateTime(2026, 10, 9, 8),
         seconds: 900,
         pitch: 22,
-        mode: ActivityMode.gaming,
+        mode: ActivityMode.leisure,
         slouchEvents: 2,
         warnings: 1,
         correctionSeconds: 6),
@@ -53,7 +53,7 @@ void main() {
     expect(today.slouchedSeconds, 300);
     expect(today.warnings, 1);
     expect(today.correctionFor(), 4);
-    expect(today.correctionFor(ActivityMode.gaming), isNull);
+    expect(today.correctionFor(ActivityMode.leisure), isNull);
     expect(today.eventsAt(4), 1);
     expect(today.pitchAt(4), closeTo(8.3333, 0.001));
     expect(today.pitchAt(0), isNull);

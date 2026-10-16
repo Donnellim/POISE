@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'widgets/gradient_background.dart';
 import 'option_page.dart';
+import 'auth/social_auth.dart';
+import 'session_entry_page.dart';
 
 class WalkthroughPage extends StatefulWidget {
-  const WalkthroughPage({super.key});
+  const WalkthroughPage({super.key, this.onExplore});
+  final VoidCallback? onExplore;
 
   @override
   State<WalkthroughPage> createState() => _WalkthroughPageState();
@@ -118,9 +121,12 @@ class _WalkthroughPageState extends State<WalkthroughPage>
                   // ── Explore Button ──
                   GestureDetector(
                     onTap: () {
+                      widget.onExplore?.call();
                       Navigator.of(context).push(
                         MaterialPageRoute(
-                          builder: (_) => const OptionPage(),
+                          builder: (_) => SocialAuth.instance.user == null
+                              ? const OptionPage()
+                              : const SessionEntryPage(),
                         ),
                       );
                     },

@@ -2,6 +2,24 @@
 
 A new Flutter project.
 
+## Browser demo login
+
+Run `flutter run -d chrome` without `SUPABASE_URL` and
+`SUPABASE_PUBLISHABLE_KEY` to test email login without a backend. Choose
+**Sign In with Email**, enter a test email such as `tester@example.com` and any
+non-empty test password, then press **Sign In**. First-time setup and returning
+user routing work as usual. The login form and dashboard label this as a demo.
+
+The demo email is saved only in this browser's local storage until logout;
+the password is never stored or sent. This does not create a Supabase account,
+send recovery emails, or provide cloud synchronization. Bluetooth in the web
+preview remains simulated. Mobile login still requires Supabase.
+
+Supplying either Supabase setting disables demo login, including when the
+configuration is incomplete or initialization fails. With both settings supplied,
+email login uses real Supabase authentication. Restart the app after changing
+these build settings.
+
 ## Password recovery setup
 
 Run with the Supabase values from `config/auth.example.json` supplied through

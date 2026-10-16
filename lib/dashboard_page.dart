@@ -1,4 +1,7 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'bluetooth/poise_ble_service.dart';
 import 'notifications/notification_center.dart';
 import 'notifications/local_notification_service.dart';
 import 'feedback_preferences.dart';
@@ -37,6 +40,7 @@ class DashboardPage extends StatefulWidget {
 }
 
 class _DashboardPageState extends State<DashboardPage> {
+  StreamSubscription<bool>? _connectionSubscription;
   int _currentIndex = 0;
   final _notifications = NotificationCenter.preview();
 
@@ -53,6 +57,10 @@ class _DashboardPageState extends State<DashboardPage> {
   @override
   void initState() {
     super.initState();
+    _connectionSubscription =
+        PoiseBleService.instance.isConnectedStream.listen((connected) {
+      if (mounted) _handleBluetoothChanged(connected);
+    });
     _activeMode = widget.initialActiveMode;
     _isBluetoothConnected = widget.initialBluetoothConnected;
     _notificationPermissionGranted =
@@ -87,6 +95,7 @@ class _DashboardPageState extends State<DashboardPage> {
 
   @override
   void dispose() {
+    _connectionSubscription?.cancel();
     _notifications.dispose();
     super.dispose();
   }
@@ -96,6 +105,9 @@ class _DashboardPageState extends State<DashboardPage> {
       _notifications.add(
           connected ? PoiseNoticeType.connected : PoiseNoticeType.disconnected);
     }
+    SharedPreferences.getInstance().then((prefs) {
+      prefs.setBool('poise.bluetoothEnabled', connected);
+    });
     setState(() {
       _isBluetoothConnected = connected;
       if (!connected) {
@@ -106,10 +118,13 @@ class _DashboardPageState extends State<DashboardPage> {
 
   void _handleReconnectFromProfile() {
     if (!_isBluetoothConnected) _notifications.add(PoiseNoticeType.connected);
+    SharedPreferences.getInstance().then((prefs) {
+      prefs.setBool('poise.bluetoothEnabled', true);
+    });
     setState(() {
       _isBluetoothConnected = true;
       _currentIndex = 0; // Navigate through the dashboard tab
-      _triggerRecalibration = true; // Trigger recalibration!
+      _triggerRecalibration = false;
     });
   }
 
@@ -179,8 +194,9 @@ class _DashboardPageState extends State<DashboardPage> {
         initialUserName: profile == null
             ? (widget.isGuest ? 'Guest User' : 'User 1')
             : (profile.displayName ?? 'POISE User'),
-        initialEmail:
-            profile == null ? (widget.isGuest ? '' : 'user1@gmail.com') : (profile.email ?? ''),
+        initialEmail: profile == null
+            ? (widget.isGuest ? '' : 'user1@gmail.com')
+            : (profile.email ?? ''),
         isBluetoothEnabled: _isBluetoothConnected,
         onBluetoothChanged: _handleBluetoothChanged,
         onReconnectSuccess: _handleReconnectFromProfile,
