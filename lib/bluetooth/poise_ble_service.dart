@@ -36,13 +36,27 @@ class PoiseBleConfig {
 
   /// Advertised name prefixes identifying POISE hardware.
   static const List<String> deviceNamePrefixes = [
+    'P.O.I.S.E',
+    'P.O.I.S.E.',
     'POISE',
     'POISE-BLE',
     'POISE_DEVICE'
   ];
 
+  /// Returns true if the device name matches P.O.I.S.E or any POISE variant,
+  /// ignoring punctuation and casing (e.g. "P.O.I.S.E", "P.O.I.S.E.", "POISE").
+  static bool isPoiseDeviceName(String name) {
+    if (name.isEmpty) return false;
+    final upper = name.toUpperCase();
+    if (deviceNamePrefixes.any((prefix) => upper.contains(prefix.toUpperCase()))) {
+      return true;
+    }
+    final clean = upper.replaceAll('.', '').replaceAll('-', '').replaceAll('_', '').replaceAll(' ', '');
+    return clean.contains('POISE');
+  }
+
   /// Default mock device identifier for preview and simulation.
-  static const String defaultMockDeviceName = 'POISE Device';
+  static const String defaultMockDeviceName = 'P.O.I.S.E';
 }
 
 /// Represents a discovered POISE peripheral during BLE scanning.
@@ -341,9 +355,7 @@ class PoiseBleService {
         final name = dev.platformName.isNotEmpty
             ? dev.platformName
             : (dev.advName.isNotEmpty ? dev.advName : '');
-        final isPoiseName = PoiseBleConfig.deviceNamePrefixes.any(
-          (prefix) => name.toUpperCase().contains(prefix.toUpperCase()),
-        );
+        final isPoiseName = PoiseBleConfig.isPoiseDeviceName(name);
         final isSavedDevice = savedId != null && dev.remoteId.str == savedId;
 
         if (isPoiseName || isSavedDevice) {
@@ -406,10 +418,7 @@ class PoiseBleService {
           final devName = result.device.platformName;
           final effectiveName = advName.isNotEmpty ? advName : devName;
 
-          final matchesPrefix = PoiseBleConfig.deviceNamePrefixes.any(
-            (prefix) =>
-                effectiveName.toUpperCase().contains(prefix.toUpperCase()),
-          );
+          final matchesPrefix = PoiseBleConfig.isPoiseDeviceName(effectiveName);
 
           if (matchesPrefix) {
             final exists = _discoveredDevices
@@ -553,6 +562,43 @@ class PoiseBleService {
         } catch (e) {
           debugPrint(
               '[PoiseBleService] Battery characteristic subscription error: $e');
+        }
+      }
+
+      // Smart fallback: If exact configured UUID was not found, auto-discover by characteristic properties
+      if (telemetryChar == null) {
+        for (final service in services) {
+          final sUuid = service.uuid.toString().toLowerCase();
+          if (sUuid.contains('180f') || sUuid.contains('1800') || sUuid.contains('1801')) {
+            continue; // Skip battery and standard generic access services
+          }
+          for (final char in service.characteristics) {
+            final cUuid = char.uuid.toString().toLowerCase();
+            if ((char.properties.notify || char.properties.indicate) &&
+                !cUuid.contains('2a19')) {
+              telemetryChar = char;
+              debugPrint('[PoiseBleService] Auto-discovered telemetry characteristic: ${char.uuid}');
+              break;
+            }
+          }
+          if (telemetryChar != null) break;
+        }
+      }
+
+      if (_calibrationChar == null) {
+        for (final service in services) {
+          final sUuid = service.uuid.toString().toLowerCase();
+          if (sUuid.contains('180f') || sUuid.contains('1800') || sUuid.contains('1801')) {
+            continue;
+          }
+          for (final char in service.characteristics) {
+            if (char.properties.write || char.properties.writeWithoutResponse) {
+              _calibrationChar = char;
+              debugPrint('[PoiseBleService] Auto-discovered calibration characteristic: ${char.uuid}');
+              break;
+            }
+          }
+          if (_calibrationChar != null) break;
         }
       }
 
