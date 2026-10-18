@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'splash_screen.dart';
 import 'auth/social_auth.dart';
 import 'feedback_preferences.dart';
+import 'mode_preferences.dart';
 import 'session_entry_page.dart';
 import 'notifications/local_notification_service.dart';
 import 'database/local_database.dart';
@@ -19,6 +20,7 @@ Future<void> main() async {
     ),
   );
   await FeedbackPreferences.load();
+  await ModePreferences.load();
   await SocialAuth.instance.initialize();
   await LocalNotificationService.instance.initialize();
   SyncService.instance.initialize();

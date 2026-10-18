@@ -634,46 +634,72 @@ class _EmptyChart extends StatelessWidget {
 }
 
 const _hiddenAxis = AxisTitles(sideTitles: SideTitles(showTitles: false));
-FlTitlesData _titles(AnalyticsSummary summary, {bool degrees = false}) =>
-    FlTitlesData(
-      topTitles: _hiddenAxis,
-      rightTitles: _hiddenAxis,
-      leftTitles: AxisTitles(
-          axisNameWidget: Text(degrees ? 'Average pitch (°)' : 'Total count',
-              style: _small),
-          axisNameSize: 14,
-          sideTitles: SideTitles(
-              showTitles: true,
-              reservedSize: 24,
-              interval: degrees
-                  ? 5
-                  : math
-                      .max(
-                          1,
-                          (List.generate(summary.bucketCount, summary.eventsAt)
-                                      .reduce(math.max) /
-                                  5)
-                              .ceil())
-                      .toDouble(),
-              getTitlesWidget: (v, meta) =>
-                  Text('${v.toInt()}${degrees ? '°' : ''}', style: _small))),
-      bottomTitles: AxisTitles(
-          sideTitles: SideTitles(
-              showTitles: true,
-              interval: 1,
-              reservedSize: 24,
-              getTitlesWidget: (v, meta) {
-                if (v != v.roundToDouble() ||
-                    v < 0 ||
-                    v >= summary.bucketCount) {
-                  return const SizedBox.shrink();
-                }
-                return Padding(
-                    padding: const EdgeInsets.only(top: 7),
-                    child: Text(summary.bucketLabel(v.toInt()),
-                        style: const TextStyle(fontSize: 7, color: _ink)));
-              })),
-    );
+FlTitlesData _titles(AnalyticsSummary summary,
+    {bool degrees = false, double? maxY}) {
+  final double interval;
+  if (degrees) {
+    final effectiveMax = maxY ?? 20.0;
+    if (effectiveMax <= 15.0) {
+      interval = 5.0;
+    } else if (effectiveMax <= 30.0) {
+      interval = 10.0;
+    } else {
+      interval = 15.0;
+    }
+  } else {
+    interval = math
+        .max(
+            1,
+            (List.generate(summary.bucketCount, summary.eventsAt)
+                        .reduce(math.max) /
+                    5)
+                .ceil())
+        .toDouble();
+  }
+
+  return FlTitlesData(
+    topTitles: _hiddenAxis,
+    rightTitles: _hiddenAxis,
+    leftTitles: AxisTitles(
+        axisNameWidget: Text(degrees ? 'Average pitch (°)' : 'Total count',
+            style: _small),
+        axisNameSize: 16,
+        sideTitles: SideTitles(
+            showTitles: true,
+            reservedSize: 28,
+            interval: interval,
+            getTitlesWidget: (v, meta) {
+              if (v < 0 || (meta.max > 0 && v > meta.max)) {
+                return const SizedBox.shrink();
+              }
+              if (v != v.roundToDouble() && v % interval != 0) {
+                return const SizedBox.shrink();
+              }
+              return SideTitleWidget(
+                meta: meta,
+                space: 4,
+                child: Text('${v.toInt()}${degrees ? '°' : ''}',
+                    style: _small),
+              );
+            })),
+    bottomTitles: AxisTitles(
+        sideTitles: SideTitles(
+            showTitles: true,
+            interval: 1,
+            reservedSize: 24,
+            getTitlesWidget: (v, meta) {
+              if (v != v.roundToDouble() ||
+                  v < 0 ||
+                  v >= summary.bucketCount) {
+                return const SizedBox.shrink();
+              }
+              return Padding(
+                  padding: const EdgeInsets.only(top: 7),
+                  child: Text(summary.bucketLabel(v.toInt()),
+                      style: const TextStyle(fontSize: 7, color: _ink)));
+            })),
+  );
+}
 FlBorderData get _border => FlBorderData(
     show: true,
     border: const Border(
@@ -823,9 +849,11 @@ class _TrendChart extends StatelessWidget {
         else
           FlSpot.nullSpot
     ];
-    final max = spots
-        .where((s) => !s.isNull())
-        .fold(0.0, (value, s) => math.max(value, s.y));
+    final validSpots = spots.where((s) => !s.isNull()).toList();
+    final max = validSpots.fold(0.0, (value, s) => math.max(value, s.y));
+    final calculatedMaxY =
+        max <= 0 ? 20.0 : math.max(20.0, (max * 1.25 / 5).ceil() * 5.0);
+
     return Column(children: [
       SizedBox(
           height: 135,
@@ -833,8 +861,8 @@ class _TrendChart extends StatelessWidget {
             minX: 0,
             maxX: (summary.bucketCount - 1).toDouble(),
             minY: 0,
-            maxY: math.max(5, (max * 1.2 / 5).ceil() * 5).toDouble(),
-            titlesData: _titles(summary, degrees: true),
+            maxY: calculatedMaxY,
+            titlesData: _titles(summary, degrees: true, maxY: calculatedMaxY),
             borderData: _border,
             gridData: const FlGridData(show: false),
             extraLinesData: ExtraLinesData(horizontalLines: [
@@ -851,11 +879,21 @@ class _TrendChart extends StatelessWidget {
                         .toList())),
             lineBarsData: [
               LineChartBarData(
-                  spots: spots,
-                  color: _blue,
-                  barWidth: 2,
-                  isCurved: false,
-                  dotData: const FlDotData(show: true))
+                spots: spots,
+                color: _blue,
+                barWidth: 2.5,
+                isCurved: false,
+                dotData: FlDotData(
+                  show: true,
+                  getDotPainter: (spot, percent, barData, index) =>
+                      FlDotCirclePainter(
+                    radius: 3.5,
+                    color: _blue,
+                    strokeWidth: 1.5,
+                    strokeColor: Colors.white,
+                  ),
+                ),
+              )
             ],
           ))),
       const _Legend('Average pitch magnitude • Baseline 0°'),

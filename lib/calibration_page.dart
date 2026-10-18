@@ -12,8 +12,16 @@ class CalibrationPage extends StatelessWidget {
   const CalibrationPage({super.key, this.isGuest = false});
   final bool isGuest;
 
-  void _showCalibratedOverlay(BuildContext context) {
-    PoiseBleService.instance.setZeroBaseline();
+  Future<void> _showCalibratedOverlay(BuildContext context) async {
+    final currentRaw = PoiseBleService.instance.rawPitchAngle;
+    await PoiseBleService.instance.setZeroBaseline(baselinePitch: currentRaw);
+    if (PoiseBleService.instance.isConnected) {
+      await PoiseBleService.instance.sendSessionCommand('SESSION:START');
+    }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('poise.isCalibrated', true);
+    if (!context.mounted) return;
+
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -75,12 +83,12 @@ class CalibrationPage extends StatelessWidget {
                 height: 52,
                 child: ElevatedButton(
                   onPressed: () async {
-                    if (!PoiseBleService.instance.isConnected) return;
                     final permission = await LocalNotificationService.instance
                         .requestPermission();
                     final prefs = await SharedPreferences.getInstance();
                     await prefs.setBool(
                         'poise.notificationPermission', permission);
+                    await prefs.setBool('poise.isCalibrated', true);
                     await DeviceSession.completeSetup();
                     if (!context.mounted) return;
                     final navigator = Navigator.of(context);

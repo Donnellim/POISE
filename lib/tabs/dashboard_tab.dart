@@ -52,6 +52,32 @@ class _DashboardTabState extends State<DashboardTab> {
   DateTime? _activeSlouchStartTime;
   double _peakSlouchAngle = 0.0;
 
+  bool get _isSlouchAlert {
+    if (_livePostureAngle == null || !_isSessionRunning || _isSessionPaused) {
+      return false;
+    }
+    final absAngle = _livePostureAngle!.abs();
+    final threshold = widget.activeMode.angle.toDouble();
+    if (absAngle <= threshold) return false;
+    if (absAngle > threshold + 8.0) return true;
+    if (_activeSlouchStartTime != null) {
+      final elapsedSec =
+          DateTime.now().difference(_activeSlouchStartTime!).inMilliseconds /
+              1000.0;
+      return elapsedSec >= widget.activeMode.seconds;
+    }
+    return false;
+  }
+
+  bool get _isSlouchWarning {
+    if (_livePostureAngle == null || !_isSessionRunning || _isSessionPaused) {
+      return false;
+    }
+    final absAngle = _livePostureAngle!.abs();
+    final threshold = widget.activeMode.angle.toDouble();
+    return absAngle > threshold && !_isSlouchAlert;
+  }
+
   // ── 5. Session Elapsed Timer & Controls ──
   bool _isSessionRunning = false;
   bool _isSessionPaused = false;
@@ -197,7 +223,8 @@ class _DashboardTabState extends State<DashboardTab> {
     }
     setState(() {
       _isSessionPaused = true;
-      _livePostureAngle = null; // Stop presenting incoming values as active session readings
+      _livePostureAngle =
+          null; // Stop presenting incoming values as active session readings
     });
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -325,8 +352,7 @@ class _DashboardTabState extends State<DashboardTab> {
     } catch (_) {}
   }
 
-  bool get _shouldTrackDatabaseSession =>
-      !PoiseBleService.instance.isTesting;
+  bool get _shouldTrackDatabaseSession => !PoiseBleService.instance.isTesting;
 
   void _closeCurrentSession() {
     if (_activeSlouchStartTime != null) {
@@ -463,13 +489,6 @@ class _DashboardTabState extends State<DashboardTab> {
                 _activeSlouchStartTime = now;
                 _peakSlouchAngle = angle;
 
-                if (_lastAlertNotificationTime == null ||
-                    now.difference(_lastAlertNotificationTime!) >
-                        const Duration(seconds: 15)) {
-                  _lastAlertNotificationTime = now;
-                  NotificationScope.of(context)?.add(PoiseNoticeType.alert);
-                }
-
                 if (_currentSessionId == null) {
                   _currentSessionId = 'sess_${now.millisecondsSinceEpoch}';
                   _ensureActiveSessionStarted();
@@ -478,6 +497,19 @@ class _DashboardTabState extends State<DashboardTab> {
                 // Slouch is continuing: track the peak slouch angle
                 if (angle.abs() > _peakSlouchAngle.abs()) {
                   _peakSlouchAngle = angle;
+                }
+              }
+
+              final elapsedSec =
+                  now.difference(_activeSlouchStartTime!).inMilliseconds / 1000.0;
+              // Trigger feedback alert notification once forgiveness time has elapsed or tilt is severe
+              if (elapsedSec >= widget.activeMode.seconds ||
+                  angle.abs() > widget.activeMode.angle + 8.0) {
+                if (_lastAlertNotificationTime == null ||
+                    now.difference(_lastAlertNotificationTime!) >
+                        const Duration(seconds: 15)) {
+                  _lastAlertNotificationTime = now;
+                  NotificationScope.of(context)?.add(PoiseNoticeType.alert);
                 }
               }
             } else {
@@ -564,7 +596,8 @@ class _DashboardTabState extends State<DashboardTab> {
       });
     }
 
-    if (widget.activeMode != oldWidget.activeMode && _currentSessionId != null) {
+    if (widget.activeMode != oldWidget.activeMode &&
+        _currentSessionId != null) {
       unawaited(PoiseLocalDatabase.instance.updateSessionMode(
         _currentSessionId!,
         ModeModel.idForActivityMode(widget.activeMode),
@@ -687,7 +720,8 @@ class _DashboardTabState extends State<DashboardTab> {
                       ),
                       Text(
                         'POISE Device • Battery: $_batteryLevel%',
-                        style: const TextStyle(color: Colors.black54, fontSize: 12.5),
+                        style: const TextStyle(
+                            color: Colors.black54, fontSize: 12.5),
                       ),
                     ],
                   )),
@@ -797,302 +831,304 @@ class _DashboardTabState extends State<DashboardTab> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-              Center(
-                child: Container(
-                  width: 44,
-                  height: 5,
-                  decoration: BoxDecoration(
-                    color: Colors.black26,
-                    borderRadius: BorderRadius.circular(3),
+                  Center(
+                    child: Container(
+                      width: 44,
+                      height: 5,
+                      decoration: BoxDecoration(
+                        color: Colors.black26,
+                        borderRadius: BorderRadius.circular(3),
+                      ),
+                    ),
                   ),
-                ),
-              ),
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: (!NetworkService.instance.isConnected
-                              ? Colors.orange
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: (!NetworkService.instance.isConnected
+                                  ? Colors.orange
+                                  : (isGuest
+                                      ? Colors.grey
+                                      : (_isCloudSynced
+                                          ? const Color(0xFF0288D1)
+                                          : Colors.orange)))
+                              .withValues(alpha: 0.15),
+                          shape: BoxShape.circle,
+                        ),
+                        child: Icon(
+                          !NetworkService.instance.isConnected
+                              ? Icons.cloud_off_rounded
                               : (isGuest
-                                  ? Colors.grey
+                                  ? Icons.person_off_rounded
+                                  : (_isCloudSynced
+                                      ? Icons.cloud_done_rounded
+                                      : Icons.sync_rounded)),
+                          color: !NetworkService.instance.isConnected
+                              ? Colors.orange[800]
+                              : (isGuest
+                                  ? Colors.grey[700]
                                   : (_isCloudSynced
                                       ? const Color(0xFF0288D1)
-                                      : Colors.orange)))
-                          .withValues(alpha: 0.15),
-                      shape: BoxShape.circle,
-                    ),
-                    child: Icon(
-                      !NetworkService.instance.isConnected
-                          ? Icons.cloud_off_rounded
-                          : (isGuest
-                              ? Icons.person_off_rounded
-                              : (_isCloudSynced
-                                  ? Icons.cloud_done_rounded
-                                  : Icons.sync_rounded)),
-                      color: !NetworkService.instance.isConnected
-                          ? Colors.orange[800]
-                          : (isGuest
-                              ? Colors.grey[700]
-                              : (_isCloudSynced
+                                      : Colors.orange[800])),
+                          size: 26,
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                          child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            !NetworkService.instance.isConnected
+                                ? 'Cloud Sync: Offline'
+                                : (isGuest
+                                    ? 'Cloud Sync: Guest Mode'
+                                    : (_isCloudSynced
+                                        ? 'Cloud Sync: Active'
+                                        : 'Cloud Sync: Pending')),
+                            style: const TextStyle(
+                                color: Colors.black87,
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold),
+                          ),
+                          Text(
+                            !NetworkService.instance.isConnected
+                                ? 'No internet connection • Mobile data and Wi-Fi are disconnected. Telemetry is saved locally and will auto-sync when reconnected.'
+                                : (isGuest
+                                    ? 'Signed in as Guest. Cloud sync is only available for accounts. Go to Profile tab to sign in.'
+                                    : (_isCloudSynced
+                                        ? 'Connected as ${user.email ?? 'User'} • Auto-backup enabled'
+                                        : 'Online • Unsynced records ready to backup to cloud')),
+                            style: const TextStyle(
+                                color: Colors.black54, fontSize: 12.5),
+                          ),
+                        ],
+                      )),
+                    ],
+                  ),
+                  const SizedBox(height: 22),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 48,
+                    child: ElevatedButton.icon(
+                      onPressed: () async {
+                        if (!NetworkService.instance.isConnected) {
+                          Navigator.pop(context);
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              backgroundColor: const Color(0xFFE53935),
+                              behavior: SnackBarBehavior.floating,
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12)),
+                              content: const Row(
+                                children: [
+                                  Icon(Icons.cloud_off_rounded,
+                                      color: Colors.white),
+                                  SizedBox(width: 10),
+                                  Expanded(
+                                    child: Text(
+                                      'Cannot sync while offline. Please connect to Wi-Fi or mobile data.',
+                                      style: TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.w600),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              duration: const Duration(seconds: 4),
+                            ),
+                          );
+                          return;
+                        }
+                        setModalState(() => _isSyncing = true);
+                        setState(() => _isSyncing = true);
+                        await _flushRealtimePostureData();
+                        final success =
+                            await SyncService.instance.syncToCloud();
+                        await Future.delayed(const Duration(milliseconds: 300));
+                        if (!mounted) return;
+                        setState(() {
+                          _isSyncing = false;
+                          _isCloudSynced = success;
+                        });
+                        if (context.mounted) {
+                          Navigator.pop(context);
+                          final errorMsg = SyncService.instance.lastError.value;
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              backgroundColor: success
                                   ? const Color(0xFF0288D1)
-                                  : Colors.orange[800])),
-                      size: 26,
+                                  : const Color(0xFFE53935),
+                              behavior: SnackBarBehavior.floating,
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12)),
+                              content: Row(
+                                children: [
+                                  Icon(
+                                      success
+                                          ? Icons.check_circle_outline
+                                          : Icons.cloud_off_rounded,
+                                      color: Colors.white),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Text(
+                                      success
+                                          ? 'All posture session logs synced to cloud!'
+                                          : (errorMsg ??
+                                              'Saved locally. Will sync when cloud is reachable.'),
+                                      style: const TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.w600),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              duration: const Duration(seconds: 4),
+                            ),
+                          );
+                        }
+                      },
+                      icon: _isSyncing
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                  color: Colors.white, strokeWidth: 2),
+                            )
+                          : const Icon(Icons.sync_rounded),
+                      label: Text(
+                        _isSyncing ? 'Syncing...' : 'Sync Posture Data Now',
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF0288D1),
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14)),
+                      ),
                     ),
                   ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                      child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        !NetworkService.instance.isConnected
-                            ? 'Cloud Sync: Offline'
-                            : (isGuest
-                                ? 'Cloud Sync: Guest Mode'
-                                : (_isCloudSynced
-                                    ? 'Cloud Sync: Active'
-                                    : 'Cloud Sync: Pending')),
-                        style: const TextStyle(
-                            color: Colors.black87,
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 44,
+                    child: OutlinedButton.icon(
+                      onPressed: () async {
+                        Navigator.pop(context);
+                        await _generateDemoTelemetryAndSync();
+                      },
+                      icon: const Icon(Icons.science_outlined, size: 20),
+                      label: const Text('Simulate Test Session & Sync'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: const Color(0xFF0288D1),
+                        side: const BorderSide(color: Color(0xFF0288D1)),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14)),
                       ),
-                      Text(
-                        !NetworkService.instance.isConnected
-                            ? 'No internet connection • Mobile data and Wi-Fi are disconnected. Telemetry is saved locally and will auto-sync when reconnected.'
-                            : (isGuest
-                                ? 'Signed in as Guest. Cloud sync is only available for accounts. Go to Profile tab to sign in.'
-                                : (_isCloudSynced
-                                    ? 'Connected as ${user.email ?? 'User'} • Auto-backup enabled'
-                                    : 'Online • Unsynced records ready to backup to cloud')),
-                        style: const TextStyle(
-                            color: Colors.black54, fontSize: 12.5),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 44,
+                    child: OutlinedButton.icon(
+                      onPressed: () {
+                        Navigator.pop(context);
+                        PoiseBleService.instance.simulatePitchAngle(18.5);
+                      },
+                      icon: const Icon(Icons.airline_seat_recline_extra_rounded,
+                          size: 20),
+                      label: const Text('Simulate Realtime Slouch (+18.5°)'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: const Color(0xFFEF5350),
+                        side: const BorderSide(color: Color(0xFFEF5350)),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14)),
                       ),
-                    ],
-                  )),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 44,
+                    child: OutlinedButton.icon(
+                      onPressed: () {
+                        Navigator.pop(context);
+                        PoiseBleService.instance.simulatePitchAngle(0.0);
+                      },
+                      icon: const Icon(Icons.check_circle_outline, size: 20),
+                      label: const Text('Reset Pitch Angle (0.0°)'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: const Color(0xFF2E7D32),
+                        side: const BorderSide(color: Color(0xFF2E7D32)),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14)),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 44,
+                    child: OutlinedButton.icon(
+                      onPressed: () {
+                        Navigator.pop(context);
+                        if (PoiseBleService.instance.isMockStreaming) {
+                          PoiseBleService.instance.stopMockTelemetryStream();
+                        } else {
+                          PoiseBleService.instance.startMockTelemetryStream();
+                        }
+                      },
+                      icon: Icon(
+                        PoiseBleService.instance.isMockStreaming
+                            ? Icons.pause_circle_outline
+                            : Icons.play_circle_outline,
+                        size: 20,
+                      ),
+                      label: Text(PoiseBleService.instance.isMockStreaming
+                          ? 'Stop Live Sensor Drift'
+                          : 'Start Live Sensor Drift (0° ↔ 18°)'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: const Color(0xFF00838F),
+                        side: const BorderSide(color: Color(0xFF00838F)),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14)),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 44,
+                    child: OutlinedButton(
+                      onPressed: () {
+                        Navigator.pop(context);
+                        setState(() {
+                          _isCloudSynced = !_isCloudSynced;
+                        });
+                      },
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.black87,
+                        side: const BorderSide(color: Colors.black26),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14)),
+                      ),
+                      child: Text(_isCloudSynced
+                          ? 'Pause Cloud Sync (Offline)'
+                          : 'Enable Cloud Sync'),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
                 ],
               ),
-              const SizedBox(height: 22),
-              SizedBox(
-                width: double.infinity,
-                height: 48,
-                child: ElevatedButton.icon(
-                  onPressed: () async {
-                    if (!NetworkService.instance.isConnected) {
-                      Navigator.pop(context);
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          backgroundColor: const Color(0xFFE53935),
-                          behavior: SnackBarBehavior.floating,
-                          shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12)),
-                          content: const Row(
-                            children: [
-                              Icon(Icons.cloud_off_rounded,
-                                  color: Colors.white),
-                              SizedBox(width: 10),
-                              Expanded(
-                                child: Text(
-                                  'Cannot sync while offline. Please connect to Wi-Fi or mobile data.',
-                                  style: TextStyle(
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.w600),
-                                ),
-                              ),
-                            ],
-                          ),
-                          duration: const Duration(seconds: 4),
-                        ),
-                      );
-                      return;
-                    }
-                    setModalState(() => _isSyncing = true);
-                    setState(() => _isSyncing = true);
-                    await _flushRealtimePostureData();
-                    final success = await SyncService.instance.syncToCloud();
-                    await Future.delayed(const Duration(milliseconds: 300));
-                    if (!mounted) return;
-                    setState(() {
-                      _isSyncing = false;
-                      _isCloudSynced = success;
-                    });
-                    if (context.mounted) {
-                      Navigator.pop(context);
-                      final errorMsg = SyncService.instance.lastError.value;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          backgroundColor: success
-                              ? const Color(0xFF0288D1)
-                              : const Color(0xFFE53935),
-                          behavior: SnackBarBehavior.floating,
-                          shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12)),
-                          content: Row(
-                            children: [
-                              Icon(
-                                  success
-                                      ? Icons.check_circle_outline
-                                      : Icons.cloud_off_rounded,
-                                  color: Colors.white),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Text(
-                                  success
-                                      ? 'All posture session logs synced to cloud!'
-                                      : (errorMsg ??
-                                          'Saved locally. Will sync when cloud is reachable.'),
-                                  style: const TextStyle(
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.w600),
-                                ),
-                              ),
-                            ],
-                          ),
-                          duration: const Duration(seconds: 4),
-                        ),
-                      );
-                    }
-                  },
-                  icon: _isSyncing
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(
-                              color: Colors.white, strokeWidth: 2),
-                        )
-                      : const Icon(Icons.sync_rounded),
-                  label: Text(
-                    _isSyncing ? 'Syncing...' : 'Sync Posture Data Now',
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF0288D1),
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14)),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 10),
-              SizedBox(
-                width: double.infinity,
-                height: 44,
-                child: OutlinedButton.icon(
-                  onPressed: () async {
-                    Navigator.pop(context);
-                    await _generateDemoTelemetryAndSync();
-                  },
-                  icon: const Icon(Icons.science_outlined, size: 20),
-                  label: const Text('Simulate Test Session & Sync'),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: const Color(0xFF0288D1),
-                    side: const BorderSide(color: Color(0xFF0288D1)),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14)),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 10),
-              SizedBox(
-                width: double.infinity,
-                height: 44,
-                child: OutlinedButton.icon(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    PoiseBleService.instance.simulatePitchAngle(18.5);
-                  },
-                  icon: const Icon(Icons.airline_seat_recline_extra_rounded, size: 20),
-                  label: const Text('Simulate Realtime Slouch (+18.5°)'),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: const Color(0xFFEF5350),
-                    side: const BorderSide(color: Color(0xFFEF5350)),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14)),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 10),
-              SizedBox(
-                width: double.infinity,
-                height: 44,
-                child: OutlinedButton.icon(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    PoiseBleService.instance.simulatePitchAngle(0.0);
-                  },
-                  icon: const Icon(Icons.check_circle_outline, size: 20),
-                  label: const Text('Reset Pitch Angle (0.0°)'),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: const Color(0xFF2E7D32),
-                    side: const BorderSide(color: Color(0xFF2E7D32)),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14)),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 10),
-              SizedBox(
-                width: double.infinity,
-                height: 44,
-                child: OutlinedButton.icon(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    if (PoiseBleService.instance.isMockStreaming) {
-                      PoiseBleService.instance.stopMockTelemetryStream();
-                    } else {
-                      PoiseBleService.instance.startMockTelemetryStream();
-                    }
-                  },
-                  icon: Icon(
-                    PoiseBleService.instance.isMockStreaming
-                        ? Icons.pause_circle_outline
-                        : Icons.play_circle_outline,
-                    size: 20,
-                  ),
-                  label: Text(PoiseBleService.instance.isMockStreaming
-                      ? 'Stop Live Sensor Drift'
-                      : 'Start Live Sensor Drift (0° ↔ 18°)'),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: const Color(0xFF00838F),
-                    side: const BorderSide(color: Color(0xFF00838F)),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14)),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 10),
-              SizedBox(
-                width: double.infinity,
-                height: 44,
-                child: OutlinedButton(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    setState(() {
-                      _isCloudSynced = !_isCloudSynced;
-                    });
-                  },
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: Colors.black87,
-                    side: const BorderSide(color: Colors.black26),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14)),
-                  ),
-                  child: Text(_isCloudSynced
-                      ? 'Pause Cloud Sync (Offline)'
-                      : 'Enable Cloud Sync'),
-                ),
-              ),
-              const SizedBox(height: 10),
-            ],
+            ),
           ),
         ),
       ),
-    ),
-  ),
-);
-}
+    );
+  }
 
   Future<void> _generateDemoTelemetryAndSync() async {
     try {
@@ -1648,6 +1684,9 @@ class _DashboardTabState extends State<DashboardTab> {
                       painter: _SpeedometerGaugePainter(
                         angle: hasReading ? _livePostureAngle! : 0.0,
                         isConnected: hasReading,
+                        activeMode: widget.activeMode,
+                        isSlouchAlert: _isSlouchAlert,
+                        isSlouchWarning: _isSlouchWarning,
                       ),
                     ),
 
@@ -1701,6 +1740,9 @@ class _DashboardTabState extends State<DashboardTab> {
                       child: RealTimeSpineTracker(
                         pitchAngle: hasReading ? _livePostureAngle! : 0.0,
                         isConnected: hasReading,
+                        activeMode: widget.activeMode,
+                        isSlouchAlert: _isSlouchAlert,
+                        isSlouchWarning: _isSlouchWarning,
                       ),
                     ),
                   ],
@@ -1783,6 +1825,18 @@ class _DashboardTabState extends State<DashboardTab> {
                                           color: Colors.black,
                                           fontSize: 15,
                                           fontWeight: FontWeight.bold),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      _isBluetoothConnected
+                                          ? 'Hardware Synced'
+                                          : 'Saved: ${widget.activeMode.label}',
+                                      style: const TextStyle(
+                                          color: Colors.black54,
+                                          fontSize: 7.5,
+                                          fontWeight: FontWeight.w600),
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
                                     ),
@@ -1873,7 +1927,9 @@ class _DashboardTabState extends State<DashboardTab> {
                       alignment: Alignment.centerLeft,
                       child: Text(
                         _isSessionRunning
-                            ? (_isSessionPaused ? 'Session Paused' : 'Session Running')
+                            ? (_isSessionPaused
+                                ? 'Session Paused'
+                                : 'Session Running')
                             : 'Session Inactive',
                         style: const TextStyle(
                             color: Colors.black54,
@@ -1901,8 +1957,8 @@ class _DashboardTabState extends State<DashboardTab> {
                       : null,
                   behavior: HitTestBehavior.opaque,
                   child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 7, vertical: 5),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 7, vertical: 5),
                     decoration: BoxDecoration(
                       color: _isSessionPaused
                           ? const Color(0xFF2E7D32)
@@ -2000,8 +2056,17 @@ class _DashboardTabState extends State<DashboardTab> {
 class _SpeedometerGaugePainter extends CustomPainter {
   final double angle;
   final bool isConnected;
+  final ActivityMode activeMode;
+  final bool isSlouchAlert;
+  final bool isSlouchWarning;
 
-  _SpeedometerGaugePainter({required this.angle, required this.isConnected});
+  _SpeedometerGaugePainter({
+    required this.angle,
+    required this.isConnected,
+    this.activeMode = ActivityMode.normal,
+    this.isSlouchAlert = false,
+    this.isSlouchWarning = false,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -2022,23 +2087,41 @@ class _SpeedometerGaugePainter extends CustomPainter {
       ..strokeCap = StrokeCap.round;
     canvas.drawArc(rect, startAngle, sweepAngle, false, bgPaint);
 
-    // 2. Color Gradient Arc (Green -> Yellow -> Red)
-    // Canvas rotation guarantees zero wrap-around at bottom right!
+    // 2. Color Gradient Arc (Dynamic per ActivityMode threshold)
     canvas.save();
     canvas.translate(center.dx, center.dy);
     canvas.rotate(startAngle);
+
+    final double threshold = activeMode.angle.toDouble();
+    final double tThreshPos = (0.5 + (threshold / 120.0)).clamp(0.5, 0.95);
+    final double tWarnPos =
+        (0.5 + ((threshold + 6.0) / 120.0)).clamp(tThreshPos, 0.98);
+
+    final double tThreshNeg = (0.5 - (threshold / 120.0)).clamp(0.05, 0.5);
+    final double tWarnNeg =
+        (0.5 - ((threshold + 6.0) / 120.0)).clamp(0.02, tThreshNeg);
 
     final sweepGradient = SweepGradient(
       startAngle: 0.0,
       endAngle: sweepAngle,
       colors: const [
-        Color(0xFF00E676), // Bright Green (-60°)
-        Color(0xFF76FF03), // Light green (-30°)
-        Color(0xFFFFEA00), // Yellow (0°)
-        Color(0xFFFF9100), // Orange (30°)
-        Color(0xFFFF1744), // Red (60°)
+        Color(0xFFFF1744), // Red (-60°)
+        Color(0xFFFF9100), // Orange/Amber
+        Color(0xFF00E676), // Green (-threshold)
+        Color(0xFF00E5FF), // Cyan (0° Neutral)
+        Color(0xFF00E676), // Green (+threshold)
+        Color(0xFFFF9100), // Orange/Amber (+threshold + 6°)
+        Color(0xFFFF1744), // Red (+60°)
       ],
-      stops: const [0.0, 0.25, 0.50, 0.75, 1.0],
+      stops: [
+        0.0,
+        tWarnNeg,
+        tThreshNeg,
+        0.50,
+        tThreshPos,
+        tWarnPos,
+        1.0,
+      ],
     );
 
     final arcPaint = Paint()
@@ -2120,10 +2203,19 @@ class _SpeedometerGaugePainter extends CustomPainter {
       }
     }
 
-    // 4. White Needle Indicator Line (Points to 0° when disconnected, or live angle when connected)
+    // 4. Needle Indicator Line (Points to 0° when disconnected, or live angle when connected)
     final double needleDeg = isConnected ? angle.clamp(-60.0, 60.0) : 0.0;
     final double needleT = (needleDeg + 60.0) / 120.0;
     final double needleRad = startAngle + needleT * sweepAngle;
+
+    Color needleColor = Colors.white;
+    if (isConnected) {
+      if (isSlouchAlert) {
+        needleColor = const Color(0xFFFF1744); // Critical Slouch: Neon Red
+      } else if (isSlouchWarning) {
+        needleColor = const Color(0xFFFFB300); // Forgiveness Window: Amber
+      }
+    }
 
     final shadowPaint = Paint()
       ..color = Colors.black38
@@ -2131,7 +2223,7 @@ class _SpeedometerGaugePainter extends CustomPainter {
       ..strokeCap = StrokeCap.round;
 
     final needlePaint = Paint()
-      ..color = Colors.white
+      ..color = needleColor
       ..strokeWidth = 3.5
       ..strokeCap = StrokeCap.round;
 
@@ -2148,106 +2240,454 @@ class _SpeedometerGaugePainter extends CustomPainter {
         pStart + const Offset(1, 2), pEnd + const Offset(1, 2), shadowPaint);
     canvas.drawLine(pStart, pEnd, needlePaint);
 
-    canvas.drawCircle(pEnd, 4, Paint()..color = Colors.white);
+    canvas.drawCircle(pEnd, 4, Paint()..color = needleColor);
   }
 
   @override
   bool shouldRepaint(covariant _SpeedometerGaugePainter oldDelegate) {
-    return oldDelegate.angle != angle || oldDelegate.isConnected != isConnected;
+    return oldDelegate.angle != angle ||
+        oldDelegate.isConnected != isConnected ||
+        oldDelegate.activeMode != activeMode ||
+        oldDelegate.isSlouchAlert != isSlouchAlert ||
+        oldDelegate.isSlouchWarning != isSlouchWarning;
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Real-Time Articulated 3D Holographic Spine Model Tracker
+// Real-Time Articulated 2D Sagittal Spine Model Tracker
 // ─────────────────────────────────────────────────────────────────────────────
 
 class RealTimeSpineTracker extends StatelessWidget {
   final double pitchAngle;
   final bool isConnected;
+  final ActivityMode activeMode;
+  final bool isSlouchAlert;
+  final bool isSlouchWarning;
 
   const RealTimeSpineTracker({
     super.key,
     required this.pitchAngle,
     required this.isConnected,
+    this.activeMode = ActivityMode.normal,
+    this.isSlouchAlert = false,
+    this.isSlouchWarning = false,
   });
 
   @override
   Widget build(BuildContext context) {
-    final double targetAngle = isConnected ? pitchAngle : 0.0;
+    return SagittalPostureViewer(
+      pitchAngle: isConnected ? pitchAngle : 0.0,
+      isConnected: isConnected,
+      activeMode: activeMode,
+      isSlouchAlert: isSlouchAlert,
+      isSlouchWarning: isSlouchWarning,
+      width: 220,
+      height: 190,
+      showBadge: false,
+    );
+  }
+}
+
+class SagittalPostureViewer extends StatelessWidget {
+  /// Real-time pitch angle in degrees (0.0° to 45.0°+)
+  final double pitchAngle;
+  final bool isConnected;
+  final ActivityMode activeMode;
+  final bool isSlouchAlert;
+  final bool isSlouchWarning;
+  final double? width;
+  final double? height;
+  final bool showBadge;
+
+  const SagittalPostureViewer({
+    super.key,
+    required this.pitchAngle,
+    this.isConnected = true,
+    this.activeMode = ActivityMode.normal,
+    this.isSlouchAlert = false,
+    this.isSlouchWarning = false,
+    this.width,
+    this.height,
+    this.showBadge = true,
+  });
+
+  /// Helper to determine status color based on active mode's thresholds and forgiveness time
+  Color _getStatusColor(double angle) {
+    if (!isConnected) {
+      return const Color(0xFF64B5F6); // Standby / Disconnected: Ice Blue
+    }
+    final absAngle = angle.abs();
+    final threshold = activeMode.angle.toDouble();
+
+    if (isSlouchAlert || absAngle > threshold + 8.0) {
+      return const Color(0xFFFF1744); // Critical Slouch: Neon Red
+    } else if (isSlouchWarning || absAngle > threshold) {
+      return const Color(0xFFFFB300); // Warning / Forgiveness Buffer: Vibrant Amber
+    } else {
+      return const Color(0xFF00E5FF); // Normal: Glowing Cyan
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final statusColor = _getStatusColor(pitchAngle);
 
     return TweenAnimationBuilder<double>(
-      tween: Tween<double>(end: targetAngle),
-      duration: const Duration(milliseconds: 240),
+      tween: Tween<double>(begin: 0.0, end: pitchAngle),
+      duration: const Duration(milliseconds: 250),
       curve: Curves.easeOutCubic,
       builder: (context, animatedAngle, child) {
-        // Biomechanical tilt angle in radians (scaled naturally for torso inclination)
-        final double angleRad = (animatedAngle * math.pi / 180.0) * 0.72;
-
-        Color auraColor;
-        if (!isConnected) {
-          auraColor = Colors.transparent;
-        } else if (animatedAngle.abs() <= 10.0) {
-          auraColor = const Color(0xFF00E5FF).withValues(alpha: 0.28);
-        } else if (animatedAngle.abs() <= 15.0) {
-          auraColor = const Color(0xFFFFD600).withValues(alpha: 0.30);
-        } else {
-          auraColor = const Color(0xFFFF3D00).withValues(alpha: 0.38);
-        }
-
         return SizedBox(
-          height: 182,
-          width: 140,
+          width: width ?? double.infinity,
+          height: height ?? 380,
           child: Stack(
-            alignment: Alignment.bottomCenter,
-            clipBehavior: Clip.none,
             children: [
-              // Dynamic posture aura glow behind model
-              if (isConnected)
+              // Use the supplied sagittal reference as the actual model.
+              // The lower back remains anchored while the live pitch gently
+              // rotates the figure to show the user's posture direction.
+              Positioned.fill(
+                child: Center(
+                  child: Transform.rotate(
+                    angle: animatedAngle.clamp(-45.0, 45.0) *
+                        math.pi /
+                        180.0 *
+                        0.35,
+                    alignment: const Alignment(0.0, 0.72),
+                    child: ColorFiltered(
+                      colorFilter: ColorFilter.mode(
+                        statusColor == const Color(0xFF00E5FF)
+                            ? Colors.transparent
+                            : statusColor.withValues(alpha: 0.65),
+                        BlendMode.srcATop,
+                      ),
+                      child: Image.asset(
+                        'assets/images/spine_model.png',
+                        width: 150,
+                        height: 188,
+                        fit: BoxFit.contain,
+                        filterQuality: FilterQuality.high,
+                        semanticLabel: 'Side profile posture model',
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+
+              // Overlay Angle Telemetry Badge (shown when standalone)
+              if (showBadge && isConnected)
                 Positioned(
-                  bottom: 20,
+                  top: 16,
+                  right: 16,
                   child: Container(
-                    width: 100,
-                    height: 130,
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                     decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      boxShadow: [
-                        BoxShadow(
-                          color: auraColor,
-                          blurRadius: 36,
-                          spreadRadius: 8,
+                      color: Colors.black.withValues(alpha: 0.6),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: statusColor.withValues(alpha: 0.5),
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 8,
+                          height: 8,
+                          decoration: BoxDecoration(
+                            color: statusColor,
+                            shape: BoxShape.circle,
+                            boxShadow: [
+                              BoxShadow(
+                                color: statusColor,
+                                blurRadius: 6,
+                                spreadRadius: 1,
+                              )
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          "${animatedAngle.toStringAsFixed(1)}°",
+                          style: TextStyle(
+                            color: statusColor,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14,
+                            fontFamily: 'monospace',
+                          ),
                         ),
                       ],
                     ),
                   ),
                 ),
-
-              // The authentic 3D holographic spine model from spine_model.png,
-              // dynamically articulated to follow the POISE pitch angle in real time.
-              Transform(
-                alignment: const Alignment(0.0, 0.95),
-                transform: Matrix4.identity()
-                  ..rotateZ(angleRad)
-                  ..multiply(
-                    Matrix4.translationValues(
-                      math.sin(angleRad) * 6.0,
-                      (1.0 - math.cos(angleRad)) * -4.0,
-                      0.0,
-                    ),
-                  ),
-                child: SizedBox(
-                  height: 182,
-                  width: 110,
-                  child: Image.asset(
-                    'assets/images/spine_model.png',
-                    height: 182,
-                    fit: BoxFit.contain,
-                  ),
-                ),
-              ),
             ],
           ),
         );
       },
     );
+  }
+}
+
+// ignore: unused_element
+class _PostureSpinePainter extends CustomPainter {
+  final double pitchAngle;
+  final Color accentColor;
+  final bool isConnected;
+
+  _PostureSpinePainter({
+    required this.pitchAngle,
+    required this.accentColor,
+    required this.isConnected,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    // Dynamic responsive scale factor based on container dimensions
+    final double scale = size.height / 360.0;
+    final centerX = size.width * 0.42; // Center horizontally aligned to profile
+    final centerY = size.height * 0.88; // Base at bottom lumbar anchor
+
+    // 1. Draw Background HUD Grid Lines
+    _drawHudGrid(canvas, size);
+
+    // 2. Draw Translucent Body Wireframe Silhouette (Articulates with cervical flexion)
+    _drawBodyWireframe(canvas, size, centerX, centerY, scale);
+
+    // 3. Compute Anatomical Spinal Node Coordinates
+    // Fixed Thoracic Anchor Points
+    final Offset t12 = Offset(centerX, centerY);
+    final Offset t8 = Offset(centerX - (4 * scale), centerY - (45 * scale));
+    final Offset t4 = Offset(centerX - (6 * scale), centerY - (90 * scale));
+
+    // C7-T1 Pivot Point Landmark (sensor placement level)
+    final Offset c7 = Offset(centerX - (4 * scale), centerY - (130 * scale));
+
+    // Dynamic Cervical Flexion Trigonometry (Pivot around C7-T1)
+    final double rad = pitchAngle * math.pi / 180.0;
+
+    // Segment Lengths (scaled proportionally)
+    final double midNeckLen = 45.0 * scale;
+    final double headLen = 40.0 * scale;
+
+    // Forward displacement (dx) and downward compression (dy)
+    final Offset c4 = Offset(
+      c7.dx + midNeckLen * math.sin(rad * 0.65),
+      c7.dy - midNeckLen * math.cos(rad * 0.65),
+    );
+
+    final Offset c1 = Offset(
+      c4.dx + headLen * math.sin(rad),
+      c4.dy - headLen * math.cos(rad),
+    );
+
+    final List<Offset> nodes = [t12, t8, t4, c7, c4, c1];
+
+    // 4. Draw Connecting Glowing Cubic Spline Curve
+    final Path spinePath = Path();
+    spinePath.moveTo(t12.dx, t12.dy);
+
+    for (int i = 0; i < nodes.length - 1; i++) {
+      final p0 = nodes[i];
+      final p1 = nodes[i + 1];
+      final controlPoint = Offset((p0.dx + p1.dx) / 2, (p0.dy + p1.dy) / 2);
+      spinePath.quadraticBezierTo(
+          p0.dx, p0.dy, controlPoint.dx, controlPoint.dy);
+    }
+    spinePath.lineTo(c1.dx, c1.dy);
+
+    // Outer Glow Path
+    final Paint glowPaint = Paint()
+      ..color = accentColor.withValues(alpha: isConnected ? 0.50 : 0.25)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = math.max(4.0 * scale, 3.5)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 7);
+    canvas.drawPath(spinePath, glowPaint);
+
+    // Core Solid Path
+    final Paint corePaint = Paint()
+      ..color = isConnected ? accentColor : accentColor.withValues(alpha: 0.7)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = math.max(2.5 * scale, 2.0)
+      ..strokeCap = StrokeCap.round;
+    canvas.drawPath(spinePath, corePaint);
+
+    // 5. Draw Glowing Vertebral Nodes
+    for (int i = 0; i < nodes.length; i++) {
+      final node = nodes[i];
+      final isC7 = (i == 3); // Highlight C7-T1 sensor placement landmark
+
+      // Node Outer Glow
+      final Paint nodeGlow = Paint()
+        ..color = isC7
+            ? Colors.white
+            : accentColor.withValues(alpha: isConnected ? 0.80 : 0.45)
+        ..maskFilter = MaskFilter.blur(
+            BlurStyle.normal, isC7 ? (8 * scale).clamp(5, 10) : 5);
+      canvas.drawCircle(
+        node,
+        isC7 ? (7.0 * scale).clamp(5.0, 8.0) : (4.5 * scale).clamp(3.0, 5.0),
+        nodeGlow,
+      );
+
+      // Node Inner Core
+      final Paint nodeCore = Paint()
+        ..color = isC7
+            ? Colors.white
+            : (isConnected ? const Color(0xFFE0F7FA) : Colors.white70)
+        ..style = PaintingStyle.fill;
+      canvas.drawCircle(
+        node,
+        isC7 ? (3.5 * scale).clamp(2.5, 4.0) : (2.2 * scale).clamp(1.5, 2.5),
+        nodeCore,
+      );
+
+      // Draw subtle telemetry pulse rings around C7 when active
+      if (isC7 && isConnected) {
+        final pulsePaint = Paint()
+          ..color = accentColor.withValues(alpha: 0.35)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.0;
+        canvas.drawCircle(node, (12.0 * scale).clamp(8.0, 14.0), pulsePaint);
+      }
+    }
+  }
+
+  void _drawHudGrid(Canvas canvas, Size size) {
+    final Paint gridPaint = Paint()
+      ..color = const Color(0xFF1E293B).withValues(alpha: 0.35)
+      ..strokeWidth = 0.8;
+
+    for (double x = 0; x < size.width; x += 28) {
+      canvas.drawLine(Offset(x, 0), Offset(x, size.height), gridPaint);
+    }
+    for (double y = 0; y < size.height; y += 28) {
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), gridPaint);
+    }
+  }
+
+  void _drawBodyWireframe(
+    Canvas canvas,
+    Size size,
+    double cx,
+    double cy,
+    double scale,
+  ) {
+    final Paint meshPaint = Paint()
+      ..color = const Color(0xFF1976D2).withValues(alpha: 0.42)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.1;
+
+    final double rad = pitchAngle * math.pi / 180.0;
+    final double neckTiltX = math.sin(rad) * (28.0 * scale);
+    final double neckTiltY = (1 - math.cos(rad)) * (12.0 * scale);
+    final Offset neck = Offset(
+      cx - (4 * scale) + neckTiltX * 0.45,
+      cy - (164 * scale) + neckTiltY * 0.45,
+    );
+    final Offset head = Offset(
+      cx + neckTiltX,
+      cy - (218 * scale) + neckTiltY,
+    );
+
+    // Side-profile contour based on the supplied sagittal reference image.
+    final Path bodyOutline = Path()
+      ..moveTo(cx - (30 * scale), cy)
+      ..cubicTo(
+        cx - (48 * scale),
+        cy - (56 * scale),
+        cx - (48 * scale),
+        cy - (122 * scale),
+        neck.dx - (15 * scale),
+        neck.dy + (12 * scale),
+      )
+      ..cubicTo(
+        neck.dx - (24 * scale),
+        neck.dy - (24 * scale),
+        head.dx - (24 * scale),
+        head.dy + (28 * scale),
+        head.dx - (15 * scale),
+        head.dy - (18 * scale),
+      )
+      ..cubicTo(
+        head.dx - (6 * scale),
+        head.dy - (34 * scale),
+        head.dx + (22 * scale),
+        head.dy - (30 * scale),
+        head.dx + (25 * scale),
+        head.dy - (12 * scale),
+      )
+      ..lineTo(head.dx + (39 * scale), head.dy + (3 * scale))
+      ..lineTo(head.dx + (27 * scale), head.dy + (8 * scale))
+      ..lineTo(head.dx + (21 * scale), head.dy + (18 * scale))
+      ..cubicTo(
+        head.dx + (17 * scale),
+        head.dy + (32 * scale),
+        neck.dx + (23 * scale),
+        neck.dy - (4 * scale),
+        cx + (46 * scale),
+        cy - (72 * scale),
+      )
+      ..cubicTo(
+        cx + (62 * scale),
+        cy - (38 * scale),
+        cx + (61 * scale),
+        cy - (14 * scale),
+        cx + (52 * scale),
+        cy,
+      );
+    canvas.drawPath(bodyOutline, meshPaint);
+
+    // Ear and jaw landmarks make the model read as a side-facing person.
+    final Paint detailPaint = Paint()
+      ..color = const Color(0xFF00B8D4).withValues(alpha: 0.34)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 0.9;
+    canvas.drawOval(
+      Rect.fromCenter(
+        center: Offset(head.dx - (7 * scale), head.dy + (1 * scale)),
+        width: 15 * scale,
+        height: 22 * scale,
+      ),
+      detailPaint,
+    );
+    final jaw = Path()
+      ..moveTo(head.dx - (1 * scale), head.dy + (12 * scale))
+      ..quadraticBezierTo(
+        head.dx + (9 * scale),
+        head.dy + (28 * scale),
+        neck.dx + (12 * scale),
+        neck.dy - (2 * scale),
+      );
+    canvas.drawPath(jaw, detailPaint);
+
+    // Rib and pelvis contour lines provide a stable 2D mesh behind the live spine.
+    for (int i = 0; i < 4; i++) {
+      final y = cy - ((45 + i * 25) * scale);
+      final rib = Path()
+        ..moveTo(cx - (27 * scale), y)
+        ..quadraticBezierTo(
+          cx + (5 * scale),
+          y - (10 * scale),
+          cx + (42 * scale),
+          y + (2 * scale),
+        );
+      canvas.drawPath(rib, detailPaint);
+    }
+    final pelvis = Path()
+      ..moveTo(cx - (29 * scale), cy - (18 * scale))
+      ..quadraticBezierTo(
+        cx + (5 * scale),
+        cy - (4 * scale),
+        cx + (48 * scale),
+        cy - (20 * scale),
+      );
+    canvas.drawPath(pelvis, detailPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _PostureSpinePainter oldDelegate) {
+    return oldDelegate.pitchAngle != pitchAngle ||
+        oldDelegate.accentColor != accentColor ||
+        oldDelegate.isConnected != isConnected;
   }
 }
