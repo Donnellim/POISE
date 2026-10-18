@@ -57,7 +57,7 @@ void main() {
       final device = DeviceModel(
         id: 'dev_ble_001',
         userId: 'usr_test_123',
-        deviceName: 'POISE-BLE-8492',
+        deviceName: 'POISE Device',
         pairedAt: now,
         lastSeenAt: now,
         updatedAt: now,
@@ -66,8 +66,8 @@ void main() {
       await PoiseLocalDatabase.instance.upsertDevice(device);
       final devices = await PoiseLocalDatabase.instance.getDevicesForUser('usr_test_123');
       expect(devices.length, 1);
-      expect(devices.first.deviceName, 'POISE-BLE-8492');
-      expect(devices.first.toSupabaseMap()['device_name'], 'POISE-BLE-8492');
+      expect(devices.first.deviceName, 'POISE Device');
+      expect(devices.first.toSupabaseMap()['device_name'], 'POISE Device');
     });
 
     test('Inserting session automatically inserts stub profile and device if needed', () async {
@@ -175,6 +175,63 @@ void main() {
       final sessionEvents = await PoiseLocalDatabase.instance.getEventsForSession('cloud_sess_1');
       expect(sessionEvents.length, 1);
       expect(sessionEvents.first.synced, isTrue);
+    });
+
+    test('getAllDevices returns all registered devices across users', () async {
+      final now = DateTime.now();
+      await PoiseLocalDatabase.instance.upsertDevice(DeviceModel(
+        id: 'dev_1',
+        userId: 'usr_a',
+        deviceName: 'Device A',
+        pairedAt: now,
+        lastSeenAt: now,
+        updatedAt: now,
+      ));
+      await PoiseLocalDatabase.instance.upsertDevice(DeviceModel(
+        id: 'dev_2',
+        userId: 'usr_b',
+        deviceName: 'Device B',
+        pairedAt: now,
+        lastSeenAt: now,
+        updatedAt: now,
+      ));
+
+      final all = await PoiseLocalDatabase.instance.getAllDevices();
+      expect(all.length, 2);
+    });
+
+    test('Realtime session with 0.0 degree posture readings buffers properly and remains unsynced', () async {
+      final now = DateTime.now();
+      const sId = 'sess_realtime_001';
+      const devId = 'POISE-DEVICE';
+
+      await PoiseLocalDatabase.instance.insertSession(SessionModel(
+        id: sId,
+        deviceId: devId,
+        userId: 'usr_realtime_user',
+        modeId: 1,
+        startedAt: now,
+        updatedAt: now,
+        synced: false,
+      ));
+
+      // Realtime 0.0° baseline / good posture reading
+      await PoiseLocalDatabase.instance.insertPostureEvent(PostureEventModel(
+        id: 'evt_realtime_001',
+        sessionId: sId,
+        occurredAt: now,
+        tiltAngle: 0.0,
+        durationSec: 0.0,
+        feedbackTriggered: false,
+        synced: false,
+      ));
+
+      final unsyncedSessions = await PoiseLocalDatabase.instance.getUnsyncedSessions();
+      expect(unsyncedSessions.map((s) => s.id), contains(sId));
+
+      final unsyncedEvents = await PoiseLocalDatabase.instance.getUnsyncedPostureEvents();
+      expect(unsyncedEvents.map((e) => e.id), contains('evt_realtime_001'));
+      expect(unsyncedEvents.firstWhere((e) => e.id == 'evt_realtime_001').tiltAngle, 0.0);
     });
   });
 }

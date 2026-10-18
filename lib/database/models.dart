@@ -1,4 +1,16 @@
+import 'package:uuid/uuid.dart';
 import '../activity_mode.dart';
+
+const _uuid = Uuid();
+
+/// Returns a valid UUID. If input is already a valid UUID, returns it normalized.
+/// Otherwise, generates a deterministic RFC 4122 v5 UUID from the input string.
+String ensureUuid(String input) {
+  if (Uuid.isValidUUID(fromString: input)) {
+    return input.toLowerCase();
+  }
+  return _uuid.v5(Namespace.url.value, input);
+}
 
 /// Data models corresponding to the P.O.I.S.E. database schema
 /// (both Supabase Cloud PostgreSQL and SQLite/SQFlite Local DB).
@@ -18,6 +30,13 @@ class ProfileModel {
 
   Map<String, dynamic> toMap() => {
         'id': id,
+        'full_name': fullName,
+        'created_at': createdAt.toIso8601String(),
+        'updated_at': updatedAt.toIso8601String(),
+      };
+
+  Map<String, dynamic> toSupabaseMap() => {
+        'id': ensureUuid(id),
         'full_name': fullName,
         'created_at': createdAt.toIso8601String(),
         'updated_at': updatedAt.toIso8601String(),
@@ -57,7 +76,14 @@ class DeviceModel {
         'updated_at': updatedAt.toIso8601String(),
       };
 
-  Map<String, dynamic> toSupabaseMap() => toMap();
+  Map<String, dynamic> toSupabaseMap() => {
+        'id': ensureUuid(id),
+        'user_id': ensureUuid(userId),
+        'device_name': deviceName,
+        'paired_at': pairedAt.toIso8601String(),
+        'last_seen_at': lastSeenAt.toIso8601String(),
+        'updated_at': updatedAt.toIso8601String(),
+      };
 
   factory DeviceModel.fromMap(Map<String, dynamic> map) => DeviceModel(
         id: map['id'] as String,
@@ -148,6 +174,7 @@ class SessionModel {
     required this.startedAt,
     this.endedAt,
     required this.updatedAt,
+    this.baselineAngle = 0.0,
     this.synced = false,
   });
 
@@ -158,6 +185,7 @@ class SessionModel {
   final DateTime startedAt;
   final DateTime? endedAt;
   final DateTime updatedAt;
+  final double baselineAngle;
   final bool synced;
 
   SessionModel copyWith({
@@ -165,6 +193,7 @@ class SessionModel {
     String? deviceId,
     DateTime? endedAt,
     DateTime? updatedAt,
+    double? baselineAngle,
     bool? synced,
   }) =>
       SessionModel(
@@ -175,6 +204,7 @@ class SessionModel {
         startedAt: startedAt,
         endedAt: endedAt ?? this.endedAt,
         updatedAt: updatedAt ?? this.updatedAt,
+        baselineAngle: baselineAngle ?? this.baselineAngle,
         synced: synced ?? this.synced,
       );
 
@@ -186,17 +216,21 @@ class SessionModel {
         'started_at': startedAt.toIso8601String(),
         'ended_at': endedAt?.toIso8601String(),
         'updated_at': updatedAt.toIso8601String(),
+        'baseline_angle': baselineAngle,
         'synced': synced ? 1 : 0,
       };
 
-  Map<String, dynamic> toSupabaseMap() => {
-        'id': id,
-        'device_id': deviceId,
-        'user_id': userId,
+  Map<String, dynamic> toSupabaseMap({String? fallbackDeviceId}) => {
+        'id': ensureUuid(id),
+        'device_id': ensureUuid((deviceId != null && deviceId!.trim().isNotEmpty)
+            ? deviceId!
+            : (fallbackDeviceId ?? 'poise-device-$userId')),
+        'user_id': ensureUuid(userId),
         'mode_id': modeId,
-        'started_at': startedAt.toIso8601String(),
-        if (endedAt != null) 'ended_at': endedAt!.toIso8601String(),
-        'updated_at': updatedAt.toIso8601String(),
+        'started_at': startedAt.toUtc().toIso8601String(),
+        if (endedAt != null) 'ended_at': endedAt!.toUtc().toIso8601String(),
+        'updated_at': updatedAt.toUtc().toIso8601String(),
+        'baseline_angle': baselineAngle,
       };
 
   factory SessionModel.fromMap(Map<String, dynamic> map) => SessionModel(
@@ -209,6 +243,7 @@ class SessionModel {
             ? DateTime.parse(map['ended_at'] as String)
             : null,
         updatedAt: DateTime.parse(map['updated_at'] as String),
+        baselineAngle: (map['baseline_angle'] as num?)?.toDouble() ?? 0.0,
         synced: map['synced'] == 1 || map['synced'] == true,
       );
 }
@@ -221,6 +256,8 @@ class PostureEventModel {
     required this.tiltAngle,
     required this.durationSec,
     this.feedbackTriggered = true,
+    this.correctedAt,
+    this.correctionTimeSec,
     this.synced = false,
   });
 
@@ -230,15 +267,28 @@ class PostureEventModel {
   final double tiltAngle;
   final double durationSec;
   final bool feedbackTriggered;
+  final DateTime? correctedAt;
+  final double? correctionTimeSec;
   final bool synced;
 
-  PostureEventModel copyWith({bool? synced}) => PostureEventModel(
+  PostureEventModel copyWith({
+    DateTime? occurredAt,
+    double? tiltAngle,
+    double? durationSec,
+    bool? feedbackTriggered,
+    DateTime? correctedAt,
+    double? correctionTimeSec,
+    bool? synced,
+  }) =>
+      PostureEventModel(
         id: id,
         sessionId: sessionId,
-        occurredAt: occurredAt,
-        tiltAngle: tiltAngle,
-        durationSec: durationSec,
-        feedbackTriggered: feedbackTriggered,
+        occurredAt: occurredAt ?? this.occurredAt,
+        tiltAngle: tiltAngle ?? this.tiltAngle,
+        durationSec: durationSec ?? this.durationSec,
+        feedbackTriggered: feedbackTriggered ?? this.feedbackTriggered,
+        correctedAt: correctedAt ?? this.correctedAt,
+        correctionTimeSec: correctionTimeSec ?? this.correctionTimeSec,
         synced: synced ?? this.synced,
       );
 
@@ -249,16 +299,20 @@ class PostureEventModel {
         'tilt_angle': tiltAngle,
         'duration_sec': durationSec,
         'feedback_triggered': feedbackTriggered ? 1 : 0,
+        'corrected_at': correctedAt?.toIso8601String(),
+        'correction_time_sec': correctionTimeSec,
         'synced': synced ? 1 : 0,
       };
 
   Map<String, dynamic> toSupabaseMap() => {
-        'id': id,
-        'session_id': sessionId,
-        'occurred_at': occurredAt.toIso8601String(),
+        'id': ensureUuid(id),
+        'session_id': ensureUuid(sessionId),
+        'occurred_at': occurredAt.toUtc().toIso8601String(),
         'tilt_angle': tiltAngle,
         'duration_sec': durationSec,
         'feedback_triggered': feedbackTriggered,
+        'corrected_at': correctedAt?.toUtc().toIso8601String(),
+        'correction_time_sec': correctionTimeSec,
         'synced': true,
       };
 
@@ -271,6 +325,10 @@ class PostureEventModel {
         durationSec: (map['duration_sec'] as num).toDouble(),
         feedbackTriggered: map['feedback_triggered'] == 1 ||
             map['feedback_triggered'] == true,
+        correctedAt: map['corrected_at'] != null
+            ? DateTime.parse(map['corrected_at'] as String)
+            : null,
+        correctionTimeSec: (map['correction_time_sec'] as num?)?.toDouble(),
         synced: map['synced'] == 1 || map['synced'] == true,
       );
 }

@@ -6,16 +6,19 @@ import 'package:flutter_application_1/activity_mode.dart';
 import 'package:flutter_application_1/dashboard_page.dart';
 import 'package:flutter_application_1/calibration_page.dart';
 import 'package:flutter_application_1/tabs/dashboard_tab.dart';
-import 'package:flutter_application_1/tabs/controls_tab.dart';
 import 'package:flutter_application_1/bluetooth_connect_page.dart';
+
+import 'package:flutter_application_1/database/local_database.dart';
 
 void main() {
   setUp(() {
     SharedPreferences.setMockInitialValues({});
+    PoiseLocalDatabase.instance.mockRecordsForTesting = [];
     PoiseBleService.instance.resetForTesting();
     PoiseBleService.instance.simulateForTesting = true;
   });
   tearDown(() {
+    PoiseLocalDatabase.instance.mockRecordsForTesting = null;
     PoiseBleService.instance.resetForTesting();
     PoiseBleService.instance.simulateForTesting = false;
   });
@@ -41,9 +44,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text(ActivityMode.leisure.label));
     await tester.pumpAndSettle();
-    expect(find.text(ActivityMode.leisure.overlayTitle), findsOneWidget);
-    await tester.tap(find.text('Select'));
-    await tester.pumpAndSettle();
+    expect(find.text('Description'), findsOneWidget);
     {
       final reassembly = tester.binding.reassembleApplication();
       await tester.pump();
@@ -71,9 +72,8 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text(mode.label));
       await tester.pumpAndSettle();
-      expect(find.text(mode.overlayTitle), findsOneWidget);
-      await tester.tap(find.text('Select'));
-      await tester.pumpAndSettle();
+      expect(find.text('Description'), findsOneWidget);
+      expect(find.text(mode.description), findsOneWidget);
       await tester.tap(find.byIcon(Icons.home_filled));
       await tester.pumpAndSettle();
       expect(find.text(mode.label), findsOneWidget);
@@ -95,7 +95,8 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('Controls overlay Cancel does not change mode', (tester) async {
+  testWidgets('Controls tab displays dedicated Description container updating per mode',
+      (tester) async {
     tester.view.physicalSize = const Size(360, 800);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -105,26 +106,26 @@ void main() {
 
     await tester.tap(find.byIcon(Icons.tune_rounded));
     await tester.pumpAndSettle();
+
+    // Default selection is Normal
+    expect(find.text('Description'), findsOneWidget);
+    expect(find.text(ActivityMode.normal.description), findsOneWidget);
+
+    // Tap Focus card
     await tester.tap(find.text('Focus'));
     await tester.pumpAndSettle();
-    expect(find.text('Focus Mode'), findsOneWidget);
-    expect(
-        find.text(
-            'For studying, reading, and other focused academic activities. Uses a more sensitive posture setting to help you stay aware of forward-leaning posture during prolonged study sessions.'),
-        findsOneWidget);
-    await tester.tap(find.text('Cancel'));
-    await tester.pumpAndSettle();
+
+    // Description updates to Focus Mode
+    expect(find.text(ActivityMode.focus.description), findsOneWidget);
 
     await tester.tap(find.byIcon(Icons.home_filled));
     await tester.pumpAndSettle();
-    // Mode should still be Normal
-    expect(find.text('Normal'), findsOneWidget);
-    expect(find.text('15°/2s'), findsOneWidget);
+    expect(find.text('Focus'), findsOneWidget);
+    expect(find.text('10°/1s'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets(
-      'Controls tab is unscrollable and does not overlap bottom navigation bar',
+  testWidgets('Controls tab displays Activity Mode, Description, and Feedback Routing without warning banner',
       (tester) async {
     tester.view.physicalSize = const Size(360, 800);
     tester.view.devicePixelRatio = 1;
@@ -133,14 +134,16 @@ void main() {
     await tester.pumpWidget(const MaterialApp(home: DashboardPage()));
     await tester.tap(find.byIcon(Icons.tune_rounded));
     await tester.pumpAndSettle();
+
+    expect(find.text('Activity Mode'), findsOneWidget);
+    expect(find.text('Description'), findsOneWidget);
+    expect(find.text('Feedback Routing'), findsOneWidget);
+
+    // Warning banner is removed
     expect(
-        find.descendant(
-            of: find.byType(ControlsTab), matching: find.byType(Scrollable)),
+        find.text(
+            'Feedback is triggered when an incorrect posture is maintained according to the selected activity mode.'),
         findsNothing);
-    final bannerRect = tester.getRect(find.text(
-        'Feedback is triggered when an incorrect posture is maintained according to the selected activity mode.'));
-    final navBarRect = tester.getRect(find.byIcon(Icons.tune_rounded));
-    expect(bannerRect.bottom, lessThan(navBarRect.top));
     await tester.pumpWidget(const SizedBox());
   });
 

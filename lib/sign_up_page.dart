@@ -493,7 +493,7 @@ class _RegistrationCompleteDialog extends StatelessWidget {
 
             // ── Subtitle ──
             const Text(
-              'Your account has been successfully created.\nPlease sign in with your email and password.',
+              'Account confirmation is done!\nYour account is confirmed. You can now sign in with your email and password without leaving the app.',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: Colors.black,

@@ -65,12 +65,10 @@ class _DashboardPageState extends State<DashboardPage> {
     _isBluetoothConnected = widget.initialBluetoothConnected;
     _notificationPermissionGranted =
         widget.initialNotificationPermissionGranted;
-    _vibrationEnabled = widget.initialVibrationEnabled ??
-        (widget.initialPhoneNotificationEnabled == null
-            ? FeedbackPreferences.vibration
-            : !widget.initialPhoneNotificationEnabled!);
-    if (!_notificationPermissionGranted) _vibrationEnabled = true;
-    _phoneNotificationEnabled = !_vibrationEnabled;
+    _vibrationEnabled =
+        widget.initialVibrationEnabled ?? FeedbackPreferences.vibration;
+    _phoneNotificationEnabled = widget.initialPhoneNotificationEnabled ??
+        FeedbackPreferences.phoneNotification;
 
     _notifications.onNoticeAdded = _dispatchLocalNotification;
   }
@@ -135,26 +133,29 @@ class _DashboardPageState extends State<DashboardPage> {
     setState(() {
       _notificationPermissionGranted = granted;
       if (!granted) {
-        // If system permission is disabled, phone notifications cannot alert,
-        // so switch phone notification off and ensure vibration feedback is active.
         _phoneNotificationEnabled = false;
-        _vibrationEnabled = true;
-        FeedbackPreferences.save(true);
+        FeedbackPreferences.savePhoneNotification(false);
       }
     });
   }
 
   void _handleVibrationChanged(bool enabled) {
-    if (!enabled && !_notificationPermissionGranted) return;
     setState(() {
       _vibrationEnabled = enabled;
-      _phoneNotificationEnabled = !enabled;
     });
-    FeedbackPreferences.save(enabled);
+    FeedbackPreferences.saveVibration(enabled);
   }
 
-  void _handlePhoneNotificationChanged(bool enabled) =>
-      _handleVibrationChanged(!enabled);
+  void _handlePhoneNotificationChanged(bool enabled) {
+    if (enabled && !_notificationPermissionGranted) {
+      _handleNotificationPermissionChanged(true);
+      return;
+    }
+    setState(() {
+      _phoneNotificationEnabled = enabled;
+    });
+    FeedbackPreferences.savePhoneNotification(enabled);
+  }
 
   List<Widget> _buildTabs() {
     final activeMode = _activeMode;
@@ -184,8 +185,7 @@ class _DashboardPageState extends State<DashboardPage> {
           setState(() {
             _notificationPermissionGranted = true;
             _phoneNotificationEnabled = true;
-            _vibrationEnabled = false;
-            FeedbackPreferences.save(false);
+            FeedbackPreferences.savePhoneNotification(true);
           });
         },
       ),
@@ -210,7 +210,10 @@ class _DashboardPageState extends State<DashboardPage> {
   Widget _buildNavItem(int index, IconData icon) {
     final bool isSelected = _currentIndex == index;
     return GestureDetector(
-      onTap: () => setState(() => _currentIndex = index),
+      onTap: () {
+        ScaffoldMessenger.of(context).clearSnackBars();
+        setState(() => _currentIndex = index);
+      },
       behavior: HitTestBehavior.opaque,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),

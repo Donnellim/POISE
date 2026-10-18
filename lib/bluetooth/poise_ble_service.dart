@@ -33,7 +33,7 @@ class PoiseBleConfig {
   ];
 
   /// Default mock device identifier for preview and simulation.
-  static const String defaultMockDeviceName = 'POISE-BLE-8492';
+  static const String defaultMockDeviceName = 'POISE Device';
 }
 
 /// Represents a discovered POISE peripheral during BLE scanning.
@@ -74,6 +74,8 @@ class PoiseBleService {
   @visibleForTesting
   bool simulateForTesting = false;
 
+  bool get isTesting => simulateForTesting;
+
   bool get allowsSimulation =>
       simulateForTesting ||
       kIsWeb ||
@@ -103,7 +105,7 @@ class PoiseBleService {
     _zeroBaselineOffset = prefs.getDouble('poise.baseline') ?? 0;
     return connect(PoiseDiscoveredDevice(
       id: id,
-      name: prefs.getString('poise.deviceName') ?? 'P.O.I.S.E.',
+      name: prefs.getString('poise.deviceName') ?? 'POISE Device',
       rssi: 0,
       rawDevice: id.startsWith('SIMULATED-') && allowsSimulation
           ? null
@@ -113,8 +115,14 @@ class PoiseBleService {
 
   Future<void> _rememberDevice(PoiseDiscoveredDevice device) async {
     final prefs = await SharedPreferences.getInstance();
+    final normalizedName = (device.name.isEmpty ||
+            device.name.toUpperCase().contains('POISE-BLE') ||
+            device.name.toUpperCase().contains('SIMULATED') ||
+            device.name == 'P.O.I.S.E.')
+        ? 'POISE Device'
+        : device.name;
     await prefs.setString('poise.deviceId', device.id);
-    await prefs.setString('poise.deviceName', device.name);
+    await prefs.setString('poise.deviceName', normalizedName);
 
     if (simulateForTesting) return;
     try {
@@ -131,7 +139,7 @@ class PoiseBleService {
         DeviceModel(
           id: device.id,
           userId: userId,
-          deviceName: device.name,
+          deviceName: normalizedName,
           pairedAt: now,
           lastSeenAt: now,
           updatedAt: now,
@@ -164,6 +172,9 @@ class PoiseBleService {
 
   String? _connectedDeviceName;
   String? get connectedDeviceName => _connectedDeviceName;
+
+  double _rawPitchAngle = 0.0;
+  double get rawPitchAngle => _rawPitchAngle;
 
   double _currentPitchAngle = 0.0;
   double get currentPitchAngle => _currentPitchAngle;
@@ -404,6 +415,18 @@ class PoiseBleService {
   void _handleIncomingTelemetry(List<int> bytes) {
     if (bytes.isEmpty || (!isConnected && !_connecting)) return;
 
+    // Check if packet contains LittleFS bulk/stored offline records
+    try {
+      final str = utf8.decode(bytes).trim();
+      if (str.startsWith('{') ||
+          str.startsWith('[') ||
+          str.startsWith('LFS:') ||
+          str.startsWith('LOG:')) {
+        _processLittleFsPayload(str);
+        return;
+      }
+    } catch (_) {}
+
     double? rawAngle;
 
     // 1. Try ASCII String decode
@@ -430,11 +453,108 @@ class PoiseBleService {
     }
 
     if (rawAngle != null && rawAngle.isFinite) {
+      _rawPitchAngle = rawAngle;
       // Calculate effective angle relative to zero baseline calibration
       final calibratedAngle =
           (rawAngle - _zeroBaselineOffset).clamp(-60.0, 60.0);
       _currentPitchAngle = calibratedAngle;
       _pitchAngleController.add(calibratedAngle);
+    }
+  }
+
+  /// Parses LittleFS offline posture logs dumped by POISE hardware upon Bluetooth connection
+  Future<void> _processLittleFsPayload(String payload) async {
+    try {
+      final events = <PostureEventModel>[];
+      final now = DateTime.now();
+      final prefs = await SharedPreferences.getInstance();
+      final deviceId = prefs.getString('poise.deviceId') ?? 'POISE-DEVICE';
+      String userId = 'local_user';
+      try {
+        final session = Supabase.instance.client.auth.currentSession;
+        if (session != null && !session.isExpired) {
+          userId = session.user.id;
+        }
+      } catch (_) {}
+
+      if (payload.startsWith('{') || payload.startsWith('[')) {
+        final dynamic decoded = json.decode(payload);
+        final list = decoded is List
+            ? decoded
+            : (decoded is Map && decoded['events'] is List
+                ? decoded['events'] as List
+                : [decoded]);
+        for (final item in list) {
+          if (item is Map) {
+            final pitch = (item['pitch'] as num?)?.toDouble() ?? 0.0;
+            final dur = (item['duration'] as num?)?.toDouble() ?? 1.0;
+            final ts = item['timestamp'] != null
+                ? DateTime.fromMillisecondsSinceEpoch(
+                    (item['timestamp'] as num).toInt())
+                : now;
+            final modeId = (item['mode_id'] as num?)?.toInt() ?? 1;
+            final sessionId = 'lfs_sess_${ts.millisecondsSinceEpoch}';
+
+            await PoiseLocalDatabase.instance.insertSession(SessionModel(
+              id: sessionId,
+              deviceId: deviceId,
+              userId: userId,
+              modeId: modeId,
+              startedAt: ts,
+              updatedAt: ts,
+              synced: false,
+            ));
+
+            events.add(PostureEventModel(
+              id: 'lfs_evt_${ts.microsecondsSinceEpoch}_${events.length}',
+              sessionId: sessionId,
+              occurredAt: ts,
+              tiltAngle: pitch,
+              durationSec: dur,
+              feedbackTriggered: item['feedback'] == true || pitch.abs() > 15,
+              synced: false,
+            ));
+          }
+        }
+      } else if (payload.startsWith('LFS:') || payload.startsWith('LOG:')) {
+        final clean = payload.replaceFirst(RegExp(r'^(LFS:|LOG:)'), '').trim();
+        final parts = clean.split(',');
+        if (parts.length >= 2) {
+          final pitch = double.tryParse(parts[0]) ?? 0.0;
+          final dur =
+              parts.length > 1 ? (double.tryParse(parts[1]) ?? 1.0) : 1.0;
+          final modeId = parts.length > 2 ? (int.tryParse(parts[2]) ?? 1) : 1;
+          final ts =
+              parts.length > 3 ? (DateTime.tryParse(parts[3]) ?? now) : now;
+          final sessionId = 'lfs_sess_${ts.millisecondsSinceEpoch}';
+
+          await PoiseLocalDatabase.instance.insertSession(SessionModel(
+            id: sessionId,
+            deviceId: deviceId,
+            userId: userId,
+            modeId: modeId,
+            startedAt: ts,
+            updatedAt: ts,
+            synced: false,
+          ));
+
+          events.add(PostureEventModel(
+            id: 'lfs_evt_${ts.microsecondsSinceEpoch}',
+            sessionId: sessionId,
+            occurredAt: ts,
+            tiltAngle: pitch,
+            durationSec: dur,
+            feedbackTriggered: pitch.abs() > 15,
+            synced: false,
+          ));
+        }
+      }
+
+      if (events.isNotEmpty) {
+        await PoiseLocalDatabase.instance.insertPostureEventsBatch(events);
+      }
+    } catch (e) {
+      debugPrint('[PoiseBleService] LittleFS payload parse error: $e');
     }
   }
 
@@ -468,9 +588,13 @@ class PoiseBleService {
   /// Calibrate zero baseline: sets the current angle as 0° (tare),
   /// and transmits a calibration command to the hardware if supported.
   Future<void> setZeroBaseline({double? baselinePitch}) async {
-    _zeroBaselineOffset = baselinePitch ?? _currentPitchAngle;
-    _currentPitchAngle = 0.0;
-    _pitchAngleController.add(0.0);
+    _zeroBaselineOffset = baselinePitch ??
+        (_rawPitchAngle != 0.0
+            ? _rawPitchAngle
+            : (_currentPitchAngle + _zeroBaselineOffset));
+    _currentPitchAngle =
+        (_rawPitchAngle - _zeroBaselineOffset).clamp(-60.0, 60.0);
+    _pitchAngleController.add(_currentPitchAngle);
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.setDouble('poise.baseline', _zeroBaselineOffset);
@@ -493,6 +617,7 @@ class PoiseBleService {
 
   /// Emits a simulated pitch angle reading (useful for testing or manual simulation).
   void simulatePitchAngle(double angle) {
+    _rawPitchAngle = angle;
     final calibrated = (angle - _zeroBaselineOffset).clamp(-60.0, 60.0);
     _currentPitchAngle = calibrated;
     _pitchAngleController.add(calibrated);
@@ -507,6 +632,7 @@ class PoiseBleService {
         step++;
         final simulatedAngle =
             (step % 12 == 0) ? 18.0 : (step % 6 == 0 ? 8.0 : 2.5);
+        _rawPitchAngle = simulatedAngle;
         final calibrated =
             (simulatedAngle - _zeroBaselineOffset).clamp(-60.0, 60.0);
         _currentPitchAngle = calibrated;
@@ -520,6 +646,9 @@ class PoiseBleService {
     _mockStreamTimer?.cancel();
     _mockStreamTimer = null;
   }
+
+  bool get isMockStreaming =>
+      _mockStreamTimer != null && _mockStreamTimer!.isActive;
 
   void _stopMockTelemetryStream() => stopMockTelemetryStream();
 
@@ -535,6 +664,7 @@ class PoiseBleService {
     _discoveredDevices.clear();
     _activeDevice = null;
     _connectedDeviceName = null;
+    _rawPitchAngle = 0.0;
     _zeroBaselineOffset = 0.0;
     _currentPitchAngle = 0.0;
     _state = PoiseBleState.disconnected;

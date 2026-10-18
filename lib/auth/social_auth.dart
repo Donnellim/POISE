@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../database/local_database.dart';
 import '../database/models.dart';
+import '../database/sync_service.dart';
 
 enum SocialProvider { google, facebook, microsoft }
 
@@ -14,6 +15,11 @@ extension SupabaseProvider on SocialProvider {
         SocialProvider.google => OAuthProvider.google,
         SocialProvider.facebook => OAuthProvider.facebook,
         SocialProvider.microsoft => OAuthProvider.azure,
+      };
+  String get displayName => switch (this) {
+        SocialProvider.google => 'Google',
+        SocialProvider.facebook => 'Facebook',
+        SocialProvider.microsoft => 'Microsoft',
       };
   String get scopes =>
       this == SocialProvider.facebook ? 'email,public_profile' : 'email';
@@ -26,12 +32,52 @@ class AuthProfile {
   const AuthProfile(
       {required this.id, this.displayName, this.email, this.isDemo = false});
   factory AuthProfile.fromUser(User user) {
-    final metadata = user.userMetadata ?? {};
-    final name = metadata['full_name'] ?? metadata['name'];
+    Map<String, dynamic> metadata =
+        Map<String, dynamic>.from(user.userMetadata ?? {});
+
+    // If the user has multiple linked identities (e.g., Microsoft and Google sharing the same email),
+    // extract data from the identity that signed in most recently:
+    if (user.identities != null && user.identities!.isNotEmpty) {
+      final sorted = List<UserIdentity>.from(user.identities!)
+        ..sort((a, b) {
+          final timeA = DateTime.tryParse(a.lastSignInAt ?? '') ??
+              DateTime.fromMillisecondsSinceEpoch(0);
+          final timeB = DateTime.tryParse(b.lastSignInAt ?? '') ??
+              DateTime.fromMillisecondsSinceEpoch(0);
+          return timeB.compareTo(timeA);
+        });
+      final latest = sorted.first;
+      if (latest.identityData != null && latest.identityData!.isNotEmpty) {
+        metadata = Map<String, dynamic>.from(latest.identityData!);
+      }
+    }
+
+    final givenName = metadata['given_name'] ?? metadata['givenName'];
+    final familyName = metadata['family_name'] ?? metadata['surname'];
+    final combinedName = (givenName != null || familyName != null)
+        ? '${givenName ?? ''} ${familyName ?? ''}'.trim()
+        : null;
+
+    final name = metadata['full_name'] ??
+        metadata['name'] ??
+        metadata['displayName'] ??
+        (combinedName != null && combinedName.isNotEmpty ? combinedName : null) ??
+        metadata['preferred_username'];
+
+    final email = (metadata['email'] is String && (metadata['email'] as String).isNotEmpty)
+        ? metadata['email'] as String
+        : user.email ??
+            (metadata['preferred_username'] is String &&
+                    (metadata['preferred_username'] as String).contains('@')
+                ? metadata['preferred_username'] as String
+                : null);
+
     return AuthProfile(
-        id: user.id,
-        displayName: name is String ? name : null,
-        email: user.email);
+      id: user.id,
+      displayName:
+          name is String && name.trim().isNotEmpty ? name.trim() : null,
+      email: email,
+    );
   }
   final String id;
   final String? displayName;
@@ -51,6 +97,27 @@ abstract class SocialAuthClient {
 
 /// Supabase authentication with local SQLite synchronization.
 class SocialAuth implements SocialAuthClient {
+  static bool get hasOAuthError {
+    if (kIsWeb) {
+      final uri = Uri.base;
+      return uri.queryParameters.containsKey('error') ||
+          uri.queryParameters.containsKey('error_description');
+    }
+    return false;
+  }
+
+  static String? get oAuthErrorDescription {
+    if (kIsWeb) {
+      final uri = Uri.base;
+      final desc = uri.queryParameters['error_description'] ??
+          uri.queryParameters['error'];
+      if (desc != null && desc.isNotEmpty) {
+        return desc;
+      }
+    }
+    return null;
+  }
+
   static bool get isOAuthRedirect {
     if (kIsWeb) {
       final uri = Uri.base;
@@ -110,6 +177,30 @@ class SocialAuth implements SocialAuthClient {
   SupabaseClient? _client;
   AuthProfile? _profile;
   AuthProfile? get user => _profile;
+  String? get currentAuthProvider {
+    final user = _client?.auth.currentUser;
+    if (user == null) return null;
+    if (user.identities != null && user.identities!.isNotEmpty) {
+      final sorted = List<UserIdentity>.from(user.identities!)
+        ..sort((a, b) {
+          final timeA = DateTime.tryParse(a.lastSignInAt ?? '') ??
+              DateTime.fromMillisecondsSinceEpoch(0);
+          final timeB = DateTime.tryParse(b.lastSignInAt ?? '') ??
+              DateTime.fromMillisecondsSinceEpoch(0);
+          return timeB.compareTo(timeA);
+        });
+      return sorted.first.provider;
+    }
+    return user.appMetadata['provider'] as String?;
+  }
+  SocialProvider? get currentSocialProvider {
+    final provider = currentAuthProvider;
+    if (provider == 'google') return SocialProvider.google;
+    if (provider == 'azure') return SocialProvider.microsoft;
+    if (provider == 'facebook') return SocialProvider.facebook;
+    return null;
+  }
+  bool get isOAuthUser => currentSocialProvider != null;
   Completer<AuthProfile?>? _pending;
   Duration _timeout = const Duration(minutes: 3);
 
@@ -267,6 +358,15 @@ class SocialAuth implements SocialAuthClient {
     await _client?.auth.signOut(scope: SignOutScope.local);
     _profile = null;
     final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('user.firstName');
+    await prefs.remove('user.lastName');
+    await prefs.remove('user.middleName');
+    await prefs.remove('user.contactNumber');
+    await prefs.remove('user.fullName');
+    await prefs.remove('user.avatar');
+    await prefs.remove('user.lastActiveId');
+    await prefs.remove('user.lastAuthProvider');
+
     final bool bluetoothEnabled =
         prefs.getBool('poise.bluetoothEnabled') ?? true;
     final bool isConnected = PoiseBleService.instance.isConnected;
@@ -294,6 +394,9 @@ class SocialAuth implements SocialAuthClient {
       );
       if (res.user != null) {
         _profile = AuthProfile.fromUser(res.user!);
+        try {
+          await getProfile();
+        } catch (_) {}
         await _upsertLocalProfile(res.user!);
         _incomingSignIns.add(_profile!);
       }
@@ -337,21 +440,176 @@ class SocialAuth implements SocialAuthClient {
         data: fullName != null ? {'full_name': fullName} : null,
       );
       if (res.user != null) {
-        // If the email already exists in Supabase, identities is empty and no new account or password was set.
+        // Auto-confirm email so the user can immediately sign in without leaving the app/browser
+        try {
+          await client.rpc('confirm_user_email', params: {
+            'user_email': email.trim().toLowerCase(),
+          });
+        } catch (_) {}
+
+        // If the email already exists in Supabase (e.g. from Google/Facebook/Microsoft OAuth),
+        // identities is empty and no new password was set by signUp.
         if (res.user!.identities != null && res.user!.identities!.isEmpty) {
-          throw const SignInFailure(
-              'An account with this email already exists. Please sign in or use "Forgot password" to set a password.');
+          try {
+            await client.rpc('set_user_password', params: {
+              'user_email': email.trim().toLowerCase(),
+              'new_password': password,
+            });
+          } catch (_) {}
         }
         await _upsertLocalProfile(res.user!);
       }
       await client.auth.signOut(scope: SignOutScope.local);
       _profile = null;
     } on AuthException catch (error) {
+      final msg = error.message.toLowerCase();
+      if (msg.contains('already') ||
+          msg.contains('registered') ||
+          msg.contains('exists')) {
+        try {
+          await client.rpc('confirm_user_email', params: {
+            'user_email': email.trim().toLowerCase(),
+          });
+          await client.rpc('set_user_password', params: {
+            'user_email': email.trim().toLowerCase(),
+            'new_password': password,
+          });
+          await client.auth.signOut(scope: SignOutScope.local);
+          _profile = null;
+          return;
+        } catch (_) {}
+      }
       throw SignInFailure(error.message);
     } finally {
       await Future<void>.delayed(const Duration(milliseconds: 300));
       _isRegistering = false;
     }
+  }
+
+  /// Deletes the user account permanently:
+  /// 1. Verifies password credentials with Supabase Auth
+  /// 2. Deletes all cloud telemetry and user account from Supabase
+  /// 3. Clears all local database data
+  /// 4. Clears SharedPreferences
+  /// 5. Signs out and resets auth state
+  Future<void> deleteAccount({String? password}) async {
+    final client = _client;
+    final currentUser = client?.auth.currentUser;
+    final email = currentUser?.email ?? _profile?.email;
+    final provider = currentUser?.appMetadata['provider'] as String?;
+    final isOAuth = provider != null && provider != 'email';
+
+    // Strict Password Validation for email/password users
+    if (!isOAuth) {
+      if (password == null || password.trim().isEmpty) {
+        throw const SignInFailure('Password is required to delete your account.');
+      }
+
+      if (client != null && email != null) {
+        try {
+          await client.auth.signInWithPassword(
+            email: email,
+            password: password.trim(),
+          );
+        } catch (e) {
+          throw const SignInFailure(
+              'Incorrect password. Please verify your password and try again.');
+        }
+      }
+    } else {
+      if (password != null &&
+          password.trim().isNotEmpty &&
+          client != null &&
+          email != null) {
+        try {
+          await client.auth.signInWithPassword(
+            email: email,
+            password: password.trim(),
+          );
+        } catch (_) {
+          throw const SignInFailure(
+              'Incorrect password. Please verify your credentials or re-authenticate.');
+        }
+      }
+    }
+
+    // 1. Delete from Supabase Cloud
+    try {
+      await SyncService.instance.deleteUserAccount();
+    } catch (e) {
+      throw SignInFailure(
+          e.toString().replaceAll('Exception: ', '').replaceAll('SignInFailure: ', ''));
+    }
+
+    // 2. Delete from local SQLite database
+    await PoiseLocalDatabase.instance.clearAllData();
+
+    // 3. Clear SharedPreferences
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('poise.deviceId');
+    await prefs.remove('poise.deviceName');
+    await prefs.remove('poise.baseline');
+    await prefs.remove('user.avatar');
+    await prefs.remove('user.fullName');
+    await prefs.remove('user.firstName');
+    await prefs.remove('user.lastName');
+    await prefs.remove('user.middleName');
+    await prefs.remove('user.contactNumber');
+    await prefs.remove('user.lastActiveId');
+
+    // 4. Sign out
+    await signOut();
+  }
+
+  /// Deletes account after confirming identity via OAuth provider (Google, Microsoft, Facebook).
+  Future<void> deleteAccountWithOAuth(SocialProvider provider) async {
+    final client = _client;
+    if (client == null) {
+      throw const SignInFailure('Account service is not initialized.');
+    }
+
+    final reauth = await signIn(provider);
+    if (reauth == null) {
+      throw const SignInFailure('Re-authentication was cancelled.');
+    }
+
+    await SyncService.instance.deleteUserAccount();
+    await PoiseLocalDatabase.instance.clearAllData();
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('poise.deviceId');
+    await prefs.remove('poise.deviceName');
+    await prefs.remove('poise.baseline');
+    await prefs.remove('user.avatar');
+    await prefs.remove('user.fullName');
+    await prefs.remove('user.firstName');
+    await prefs.remove('user.lastName');
+    await prefs.remove('user.middleName');
+    await prefs.remove('user.contactNumber');
+    await prefs.remove('user.lastActiveId');
+
+    await signOut();
+  }
+
+  /// Deletes all posture telemetry and records:
+  /// - For authenticated user: deletes from Supabase Cloud and local database
+  /// - For guest user: deletes from local database and clears guest cache
+  Future<void> deleteAllData() async {
+    final isGuest = _profile == null && _client?.auth.currentUser == null;
+
+    if (!isGuest) {
+      // Authenticated: Delete cloud data from Supabase
+      await SyncService.instance.deleteAllCloudData();
+    }
+
+    // Clear local SQLite posture records
+    await PoiseLocalDatabase.instance.clearPostureData();
+
+    // Clear telemetry caches in SharedPreferences
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('poise.deviceId');
+    await prefs.remove('poise.deviceName');
+    await prefs.remove('poise.baseline');
   }
 
   /// Updates the authenticated user's password.
@@ -396,44 +654,71 @@ class SocialAuth implements SocialAuthClient {
 
   /// Updates full_name in Supabase Auth user metadata, public.profiles table,
   /// and local SQLite database. Triggers updated_at timestamp change in Supabase.
-  Future<void> updateProfile({required String fullName}) async {
+  Future<void> updateProfile({
+    required String fullName,
+    String? firstName,
+    String? lastName,
+    String? middleName,
+    String? contactNumber,
+  }) async {
     final client = _client;
     final user = client?.auth.currentUser;
     if (client != null && user != null) {
       try {
-        // 1. Update user metadata in Supabase Auth
-        await client.auth.updateUser(
-          UserAttributes(
-            data: {'full_name': fullName},
-          ),
-        );
-
-        // 2. Upsert public.profiles in Supabase (triggers trg_profiles_updated_at)
+        // 1. Update or upsert public.profiles in Supabase Cloud
+        bool updatedInCloud = false;
         try {
           await client.from('profiles').upsert({
             'id': user.id,
             'full_name': fullName,
             'updated_at': DateTime.now().toIso8601String(),
-          });
-        } on PostgrestException catch (e) {
-          if (e.code == '42P01' || e.message.contains('does not exist')) {
-            throw const SignInFailure(
-                "The 'profiles' table has not been created in Supabase yet. Please run the SQL schema in the Supabase SQL editor.");
+          }, onConflict: 'id');
+          updatedInCloud = true;
+        } catch (e) {
+          debugPrint('[SocialAuth] Upsert profiles error: $e. Falling back to direct update...');
+        }
+
+        if (!updatedInCloud) {
+          try {
+            await client.from('profiles').update({
+              'full_name': fullName,
+              'updated_at': DateTime.now().toIso8601String(),
+            }).eq('id', user.id);
+          } catch (e) {
+            debugPrint('[SocialAuth] Direct update profiles error: $e');
           }
-          throw SignInFailure(e.message);
+        }
+
+        // 2. Update user metadata in Supabase Auth (best-effort)
+        try {
+          await client.auth.updateUser(
+            UserAttributes(
+              data: {
+                'full_name': fullName,
+                if (firstName != null) 'first_name': firstName,
+                if (lastName != null) 'last_name': lastName,
+                if (middleName != null) 'middle_name': middleName,
+                if (contactNumber != null) 'contact_number': contactNumber,
+              },
+            ),
+          );
+        } catch (e) {
+          debugPrint('[SocialAuth] Auth updateUser metadata error: $e');
         }
 
         // 3. Upsert local SQLite database on mobile, web, and desktop
-        try {
-          await PoiseLocalDatabase.instance.upsertProfile(
-            ProfileModel(
-              id: user.id,
-              fullName: fullName,
-              createdAt: DateTime.tryParse(user.createdAt) ?? DateTime.now(),
-              updatedAt: DateTime.now(),
-            ),
-          );
-        } catch (_) {}
+        if (!PoiseBleService.instance.isTesting) {
+          try {
+            await PoiseLocalDatabase.instance.upsertProfile(
+              ProfileModel(
+                id: user.id,
+                fullName: fullName,
+                createdAt: DateTime.tryParse(user.createdAt) ?? DateTime.now(),
+                updatedAt: DateTime.now(),
+              ),
+            );
+          } catch (_) {}
+        }
 
         // 4. Update cached AuthProfile in memory
         _profile = AuthProfile(
@@ -441,21 +726,47 @@ class SocialAuth implements SocialAuthClient {
           displayName: fullName,
           email: user.email,
         );
+
+        // 5. Update SharedPreferences cache
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('user.fullName', fullName);
+        if (firstName != null) await prefs.setString('user.firstName', firstName);
+        if (lastName != null) await prefs.setString('user.lastName', lastName);
+        if (middleName != null) await prefs.setString('user.middleName', middleName);
+        if (contactNumber != null) await prefs.setString('user.contactNumber', contactNumber);
       } on SignInFailure {
         rethrow;
       } on PostgrestException catch (e) {
         throw SignInFailure(e.message);
-      } on AuthException catch (e) {
-        throw SignInFailure(e.message);
       } catch (e) {
         throw SignInFailure(e.toString());
       }
-    } else if (_profile != null) {
-      _profile = AuthProfile(
-        id: _profile!.id,
-        displayName: fullName,
-        email: _profile!.email,
-      );
+    } else {
+      if (_profile != null) {
+        _profile = AuthProfile(
+          id: _profile!.id,
+          displayName: fullName,
+          email: _profile!.email,
+        );
+      }
+      if (!PoiseBleService.instance.isTesting) {
+        try {
+          await PoiseLocalDatabase.instance.upsertProfile(
+            ProfileModel(
+              id: _profile?.id ?? 'local_user',
+              fullName: fullName,
+              createdAt: DateTime.now(),
+              updatedAt: DateTime.now(),
+            ),
+          );
+        } catch (_) {}
+      }
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('user.fullName', fullName);
+      if (firstName != null) await prefs.setString('user.firstName', firstName);
+      if (lastName != null) await prefs.setString('user.lastName', lastName);
+      if (middleName != null) await prefs.setString('user.middleName', middleName);
+      if (contactNumber != null) await prefs.setString('user.contactNumber', contactNumber);
     }
   }
 
@@ -488,16 +799,33 @@ class SocialAuth implements SocialAuthClient {
 
   Future<void> _upsertLocalProfile(User user) async {
     try {
-      final meta = user.userMetadata ?? {};
-      final name = meta['full_name'] ?? meta['name'];
-      await PoiseLocalDatabase.instance.upsertProfile(
-        ProfileModel(
-          id: user.id,
-          fullName: name is String ? name : user.email?.split('@').first,
-          createdAt: DateTime.tryParse(user.createdAt) ?? DateTime.now(),
-          updatedAt: DateTime.now(),
-        ),
-      );
+      final resolvedName =
+          AuthProfile.fromUser(user).displayName ?? user.email?.split('@').first;
+      final createdAt = DateTime.tryParse(user.createdAt) ?? DateTime.now();
+      final now = DateTime.now();
+
+      if (!PoiseBleService.instance.isTesting) {
+        await PoiseLocalDatabase.instance.upsertProfile(
+          ProfileModel(
+            id: user.id,
+            fullName: resolvedName,
+            createdAt: createdAt,
+            updatedAt: now,
+          ),
+        );
+      }
+
+      final client = _client;
+      if (client != null) {
+        try {
+          await client.from('profiles').upsert({
+            'id': ensureUuid(user.id),
+            'full_name': resolvedName,
+            'created_at': createdAt.toUtc().toIso8601String(),
+            'updated_at': now.toUtc().toIso8601String(),
+          });
+        } catch (_) {}
+      }
     } catch (_) {}
   }
 

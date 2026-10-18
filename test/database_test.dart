@@ -54,6 +54,7 @@ void main() {
             started_at TEXT NOT NULL,
             ended_at TEXT,
             updated_at TEXT NOT NULL,
+            baseline_angle REAL NOT NULL DEFAULT 0.0,
             synced INTEGER NOT NULL DEFAULT 0
           )
         ''');
@@ -62,6 +63,8 @@ void main() {
             id TEXT PRIMARY KEY,
             session_id TEXT NOT NULL,
             occurred_at TEXT NOT NULL,
+            corrected_at TEXT,
+            correction_time_sec REAL,
             tilt_angle REAL NOT NULL,
             duration_sec REAL NOT NULL,
             feedback_triggered INTEGER NOT NULL DEFAULT 1,

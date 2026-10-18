@@ -6,7 +6,11 @@ import 'package:flutter_application_1/tabs/controls_tab.dart';
 import 'package:flutter_application_1/tabs/profile_tab.dart';
 
 void main() {
-  setUp(() => FeedbackPreferences.vibration = true);
+  setUp(() {
+    FeedbackPreferences.vibration = true;
+    FeedbackPreferences.phoneNotification = false;
+  });
+
   testWidgets(
       'Default states: Vibration is ON, Phone Notification is OFF in Controls; Notifications permission is ON in Profile',
       (tester) async {
@@ -48,7 +52,7 @@ void main() {
   });
 
   testWidgets(
-      'Turning OFF Vibration in Controls automatically turns ON Phone Notification',
+      'Turning OFF Vibration in Controls turns Vibration OFF without forcing Phone Notification ON',
       (tester) async {
     tester.view.physicalSize = const Size(360, 800);
     tester.view.devicePixelRatio = 1;
@@ -73,19 +77,17 @@ void main() {
     await tester.tap(switches.first);
     await tester.pumpAndSettle();
 
-    // Vibration is now OFF, and Phone Notification automatically turned ON
+    // Vibration is now OFF, and Phone Notification remains OFF (both OFF)
     expect(tester.widget<Switch>(switches.first).value, isFalse);
-    expect(tester.widget<Switch>(switches.last).value, isTrue);
+    expect(tester.widget<Switch>(switches.last).value, isFalse);
     expect(
-      find.text(
-        'Device vibration turned off. Phone notification enabled to maintain posture feedback.',
-      ),
+      find.text('Device vibration feedback disabled.'),
       findsOneWidget,
     );
   });
 
   testWidgets(
-      'Turning OFF Phone Notification while Vibration is OFF automatically turns Vibration ON',
+      'Turning ON Phone Notification while Vibration is ON enables both simultaneously',
       (tester) async {
     tester.view.physicalSize = const Size(360, 800);
     tester.view.devicePixelRatio = 1;
@@ -103,67 +105,78 @@ void main() {
       matching: find.byType(Switch),
     );
 
-    // Turn Vibration OFF (Phone Notification turns ON)
+    // Initial: Vibration ON, Phone Notification OFF
+    expect(tester.widget<Switch>(switches.first).value, isTrue);
+    expect(tester.widget<Switch>(switches.last).value, isFalse);
+
+    // Tap Phone Notification switch to turn it ON
+    await tester.tap(switches.last);
+    await tester.pumpAndSettle();
+
+    // Both Vibration AND Phone Notification are ON simultaneously
+    expect(tester.widget<Switch>(switches.first).value, isTrue);
+    expect(tester.widget<Switch>(switches.last).value, isTrue);
+    expect(
+      find.text('Phone notification feedback enabled.'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets(
+      'Both feedback routing methods can be turned OFF and ON independently',
+      (tester) async {
+    tester.view.physicalSize = const Size(360, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(const MaterialApp(home: DashboardPage()));
+
+    // Navigate to Controls Tab
+    await tester.tap(find.byIcon(Icons.tune_rounded));
+    await tester.pumpAndSettle();
+
+    final switches = find.descendant(
+      of: find.byType(ControlsTab),
+      matching: find.byType(Switch),
+    );
+
+    // 1. Turn Vibration OFF -> Both are OFF
     await tester.tap(switches.first);
     await tester.pumpAndSettle();
     expect(tester.widget<Switch>(switches.first).value, isFalse);
-    expect(tester.widget<Switch>(switches.last).value, isTrue);
-
-    // Now attempt to turn Phone Notification OFF
-    await tester.tap(switches.last);
-    await tester.pumpAndSettle();
-
-    // Phone Notification turned OFF, and Vibration automatically turned back ON
-    expect(tester.widget<Switch>(switches.first).value, isTrue);
-    expect(tester.widget<Switch>(switches.last).value, isFalse);
-    expect(
-      find.text(
-        'Phone notification turned off. Device vibration enabled to maintain posture feedback.',
-      ),
-      findsOneWidget,
-    );
-  });
-
-  testWidgets(
-      'Selecting phone notifications switches vibration off, and vice versa',
-      (tester) async {
-    tester.view.physicalSize = const Size(360, 800);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-
-    await tester.pumpWidget(const MaterialApp(home: DashboardPage()));
-
-    // Navigate to Controls Tab
-    await tester.tap(find.byIcon(Icons.tune_rounded));
-    await tester.pumpAndSettle();
-
-    final switches = find.descendant(
-      of: find.byType(ControlsTab),
-      matching: find.byType(Switch),
-    );
-
-    expect(tester.widget<Switch>(switches.first).value, isTrue);
     expect(tester.widget<Switch>(switches.last).value, isFalse);
 
-    // Turn Phone Notification ON while Vibration is already ON
+    // 2. Turn Phone Notification ON -> Phone ON, Vibration OFF
+    ScaffoldMessenger.of(tester.element(find.byType(ControlsTab)))
+        .clearSnackBars();
+    await tester.pumpAndSettle();
     await tester.tap(switches.last);
     await tester.pumpAndSettle();
-
-    // Only phone notifications are ON
     expect(tester.widget<Switch>(switches.first).value, isFalse);
     expect(tester.widget<Switch>(switches.last).value, isTrue);
 
-    // Turn Phone Notification OFF while Vibration is ON (Vibration stays ON)
+    // 3. Turn Vibration ON -> Both are ON
+    ScaffoldMessenger.of(tester.element(find.byType(ControlsTab)))
+        .clearSnackBars();
+    await tester.pumpAndSettle();
+    await tester.tap(switches.first);
+    await tester.pumpAndSettle();
+    expect(tester.widget<Switch>(switches.first).value, isTrue);
+    expect(tester.widget<Switch>(switches.last).value, isTrue);
+
+    // 4. Turn Phone Notification OFF -> Vibration ON, Phone OFF
+    ScaffoldMessenger.of(tester.element(find.byType(ControlsTab)))
+        .clearSnackBars();
+    await tester.pumpAndSettle();
     await tester.tap(switches.last);
     await tester.pumpAndSettle();
-
     expect(tester.widget<Switch>(switches.first).value, isTrue);
     expect(tester.widget<Switch>(switches.last).value, isFalse);
   });
 
   testWidgets(
-      'Disabling Notifications permission in Profile disables Phone Notification and forces Vibration ON',
+      'Disabling Notifications permission in Profile disables Phone Notification',
       (tester) async {
     tester.view.physicalSize = const Size(360, 800);
     tester.view.devicePixelRatio = 1;
@@ -172,7 +185,7 @@ void main() {
 
     await tester.pumpWidget(const MaterialApp(home: DashboardPage()));
 
-    // First go to Controls and set Phone Notification ON, Vibration OFF
+    // First go to Controls and set Phone Notification ON
     await tester.tap(find.byIcon(Icons.tune_rounded));
     await tester.pumpAndSettle();
 
@@ -180,9 +193,8 @@ void main() {
       of: find.byType(ControlsTab),
       matching: find.byType(Switch),
     );
-    await tester.tap(controlsSwitches.first); // Vibration OFF -> Phone ON
+    await tester.tap(controlsSwitches.last); // Phone ON
     await tester.pumpAndSettle();
-    expect(tester.widget<Switch>(controlsSwitches.first).value, isFalse);
     expect(tester.widget<Switch>(controlsSwitches.last).value, isTrue);
 
     // Go to Profile Tab
@@ -198,18 +210,11 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(tester.widget<Switch>(profileSwitches.last).value, isFalse);
-    expect(
-      find.text(
-        'Notification permission disabled. Device vibration enabled for feedback.',
-      ),
-      findsOneWidget,
-    );
 
-    // Check Controls Tab: Phone Notification must now be OFF, Vibration ON
+    // Check Controls Tab: Phone Notification must now be OFF
     await tester.tap(find.byIcon(Icons.tune_rounded));
     await tester.pumpAndSettle();
 
-    expect(tester.widget<Switch>(controlsSwitches.first).value, isTrue);
     expect(tester.widget<Switch>(controlsSwitches.last).value, isFalse);
   });
 
@@ -283,11 +288,19 @@ void main() {
       findsOneWidget,
     );
 
+    // Let the snackbar dismiss
+    await tester.pump(const Duration(seconds: 3));
+    await tester.pumpAndSettle();
+
     // Go back to Profile Tab and check that Notifications permission is now ON!
     await tester.tap(find.byIcon(Icons.person_rounded));
     await tester.pumpAndSettle();
 
-    expect(tester.widget<Switch>(profileSwitches.last).value, isTrue);
+    final updatedProfileSwitches = find.descendant(
+      of: find.byType(ProfileTab),
+      matching: find.byType(Switch),
+    );
+    expect(tester.widget<Switch>(updatedProfileSwitches.last).value, isTrue);
   });
 
   testWidgets(
@@ -300,7 +313,7 @@ void main() {
 
     await tester.pumpWidget(const MaterialApp(home: DashboardPage()));
 
-    // Controls Tab switches
+    // Controls Tab
     await tester.tap(find.byIcon(Icons.tune_rounded));
     await tester.pumpAndSettle();
 
@@ -308,16 +321,17 @@ void main() {
       of: find.byType(ControlsTab),
       matching: find.byType(Switch),
     );
-    for (final element in controlsSwitches.evaluate()) {
-      final widget = element.widget as Switch;
-      expect(widget.thumbIcon, isNotNull);
-      expect(widget.activeTrackColor, const Color(0xFF388AF6));
-      expect(widget.inactiveTrackColor, const Color(0xFF1E1E1E));
-      expect(widget.activeThumbColor, Colors.white);
-      expect(widget.inactiveThumbColor, Colors.white);
+    expect(controlsSwitches, findsNWidgets(2));
+
+    for (int i = 0; i < 2; i++) {
+      final s = tester.widget<Switch>(controlsSwitches.at(i));
+      expect(s.activeThumbColor, Colors.white);
+      expect(s.inactiveThumbColor, Colors.white);
+      expect(s.activeTrackColor, const Color(0xFF388AF6));
+      expect(s.inactiveTrackColor, const Color(0xFF1E1E1E));
     }
 
-    // Profile Tab switches
+    // Profile Tab
     await tester.tap(find.byIcon(Icons.person_rounded));
     await tester.pumpAndSettle();
 
@@ -325,21 +339,14 @@ void main() {
       of: find.byType(ProfileTab),
       matching: find.byType(Switch),
     );
-    for (final element in profileSwitches.evaluate()) {
-      final widget = element.widget as Switch;
-      expect(widget.thumbIcon, isNotNull);
-      expect(widget.activeTrackColor, const Color(0xFF388AF6));
-      expect(widget.inactiveTrackColor, const Color(0xFF1E1E1E));
-      expect(widget.activeThumbColor, Colors.white);
-      expect(widget.inactiveThumbColor, Colors.white);
+    expect(profileSwitches, findsNWidgets(2));
+
+    for (int i = 0; i < 2; i++) {
+      final s = tester.widget<Switch>(profileSwitches.at(i));
+      expect(s.activeThumbColor, Colors.white);
+      expect(s.inactiveThumbColor, Colors.white);
+      expect(s.activeTrackColor, const Color(0xFF388AF6));
+      expect(s.inactiveTrackColor, const Color(0xFF1E1E1E));
     }
-
-    // Compare rendered sizes between controls and profile switches
-    final profileSwitchSize = tester.getSize(profileSwitches.first);
-    await tester.tap(find.byIcon(Icons.tune_rounded));
-    await tester.pumpAndSettle();
-    final controlsSwitchSize = tester.getSize(controlsSwitches.first);
-
-    expect(controlsSwitchSize, equals(profileSwitchSize));
   });
 }

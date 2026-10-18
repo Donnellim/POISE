@@ -4,6 +4,7 @@ import 'dashboard_page.dart';
 import 'device_check_page.dart';
 import 'device_session.dart';
 import 'auth/social_auth.dart';
+import 'sign_in_page.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class SessionEntryPage extends StatefulWidget {
@@ -21,6 +22,17 @@ class _SessionEntryPageState extends State<SessionEntryPage> {
   }
 
   Future<void> _restore() async {
+    // If returning from OAuth on web with an error, show it on SignInPage:
+    if (SocialAuth.hasOAuthError) {
+      final error = SocialAuth.oAuthErrorDescription ?? 'Sign-in failed.';
+      SocialAuth.instance.lastError.value = error;
+      if (!mounted) return;
+      Navigator.of(context).pushReplacement(MaterialPageRoute<void>(
+        builder: (_) => const SignInPage(),
+      ));
+      return;
+    }
+
     // If returning from OAuth on web and auth is still resolving, wait briefly:
     if (SocialAuth.isOAuthRedirect && SocialAuth.instance.user == null) {
       try {

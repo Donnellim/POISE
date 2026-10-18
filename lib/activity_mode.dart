@@ -9,7 +9,11 @@ enum ActivityMode {
     Icons.airline_seat_recline_normal_rounded,
     overlayTitle: 'Normal Mode',
     description:
-        'For everyday activities and general posture monitoring. Provides balanced posture monitoring for typical daily activities while allowing normal movements.',
+        'Provides balanced posture monitoring for everyday desk work, document drafting, and general computer tasks while allowing natural head movements.',
+    intendedActivity:
+        'Standard seated desk work, document drafting, general computer tasks, and alternating screen-to-paper reading.',
+    monitoringCharacteristics:
+        'Balanced sensitivity profile; tolerates natural gaze shifts and functional head articulation between display and desk surfaces while intervening against persistent forward slouching.',
   ),
   focus(
     'Focus',
@@ -18,16 +22,24 @@ enum ActivityMode {
     Icons.menu_book_rounded,
     overlayTitle: 'Focus Mode',
     description:
-        'For studying, reading, and other focused academic activities. Uses a more sensitive posture setting to help you stay aware of forward-leaning posture during prolonged study sessions.',
+        'High-sensitivity posture monitoring for intensive desk-bound study sessions and deep focus requiring sustained screen attention.',
+    intendedActivity:
+        'Disciplined, continuous desk-bound study sessions and intensive technical problem-solving requiring sustained visual attention on monitors or reference texts.',
+    monitoringCharacteristics:
+        'High-sensitivity profile; strictly enforces neutral cervical alignment to preempt early forward head posture during prolonged static sitting, with a minimal buffer to absorb instantaneous downward glances.',
   ),
   leisure(
     'Leisure',
     20,
     3,
-    Icons.sports_esports_rounded,
+    Icons.weekend_rounded,
     overlayTitle: 'Leisure Mode',
     description:
-        'For leisure and other recreational screen-based activities. Allows more posture movement while still monitoring for sustained forward-leaning posture during longer leisure sessions.',
+        'Moderate-tolerance posture monitoring adapted for casual media streaming, handheld gaming, and relaxed seating positions.',
+    intendedActivity:
+        'Casual media streaming, handheld gaming, and mobile browsing in cushioned, relaxed, or semi-reclined seating configurations.',
+    monitoringCharacteristics:
+        'Moderate-tolerance profile adapted to non-desk ergonomics; accommodates relaxed spinal inclinations, casual device handling, and minor body shifting without triggering nuisance alerts.',
   ),
   commuting(
     'Commuting',
@@ -36,7 +48,11 @@ enum ActivityMode {
     Icons.directions_subway_rounded,
     overlayTitle: 'Commuting Mode',
     description:
-        'For commuting, traveling, and activities involving frequent movement. Uses a more relaxed posture setting to reduce unnecessary feedback caused by normal movements while traveling.',
+        'Motion-damped posture monitoring for travel and transit, filtering out vehicle vibrations, chassis sway, and road bumps.',
+    intendedActivity:
+        'Travel via public or private transportation (e.g., jeepneys, buses, trains) and active mobile environments.',
+    monitoringCharacteristics:
+        'Motion-damped profile; filters out external kinematic disturbances such as chassis vibration, vehicle sway, road bumps, and inertial braking forces to isolate genuine, sustained slumping.',
   );
 
   const ActivityMode(
@@ -46,6 +62,8 @@ enum ActivityMode {
     this.icon, {
     required this.overlayTitle,
     required this.description,
+    required this.intendedActivity,
+    required this.monitoringCharacteristics,
   });
 
   final String label;
@@ -54,6 +72,8 @@ enum ActivityMode {
   final IconData icon;
   final String overlayTitle;
   final String description;
+  final String intendedActivity;
+  final String monitoringCharacteristics;
 
   /// Backwards-compatibility aliases.
   static const ActivityMode defaultMode = normal;
@@ -65,5 +85,6 @@ enum ActivityMode {
   int get forgivenessTime => seconds;
   String get angleRestrictionDisplay => '$angle°';
   String get forgivenessTimeDisplay => '${seconds}s';
+  String get tiltThresholdDisplay => '$angle° forward tilt';
+  String get forgivenessDisplay => '$seconds seconds';
 }
-

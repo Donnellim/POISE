@@ -26,8 +26,10 @@ class PostureRecord {
       required this.mode,
       this.slouchEvents = 0,
       this.warnings = 0,
-      this.correctionSeconds});
+      this.correctionSeconds,
+      this.correctedAt});
   final DateTime at;
+  final DateTime? correctedAt;
   final int seconds;
   final double pitch;
   final ActivityMode mode;
@@ -103,6 +105,9 @@ class AnalyticsSummary {
     final rows = <List<Object>>[
       [
         'source',
+        'slouched_at',
+        'corrected_at',
+        'correction_time_seconds',
         'timestamp_local',
         'duration_seconds',
         'pitch_degrees',
@@ -117,6 +122,14 @@ class AnalyticsSummary {
       for (final r in records)
         [
           sample ? 'sample' : 'measured',
+          r.at.toIso8601String(),
+          r.correctedAt?.toIso8601String() ??
+              (r.slouched
+                  ? r.at.add(Duration(seconds: r.seconds)).toIso8601String()
+                  : ''),
+          r.correctionSeconds != null
+              ? r.correctionSeconds!.toStringAsFixed(1)
+              : (r.slouched ? '${r.seconds}.0' : ''),
           r.at.toIso8601String(),
           r.seconds,
           r.pitch,

@@ -26,7 +26,7 @@ Future<void> main() async {
 
   final prefs = await SharedPreferences.getInstance();
   final bool oauthInProgress =
-      prefs.getBool('poise.oauth_in_progress') ?? false;
+      prefs.getBool('poise.oauth_in_progress') ??  false;
   if (oauthInProgress) {
     await prefs.remove('poise.oauth_in_progress');
   }

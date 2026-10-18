@@ -86,14 +86,68 @@ class _ProfileTabState extends State<ProfileTab> {
   }
 
   Future<void> _loadProfile() async {
+    final prefs = await SharedPreferences.getInstance();
+    final currentUser = SocialAuth.instance.user;
+    final currentProvider = SocialAuth.instance.currentAuthProvider;
+    final lastUserId = prefs.getString('user.lastActiveId');
+    final lastProvider = prefs.getString('user.lastAuthProvider');
+
+    if (currentUser != null &&
+        ((lastUserId != null && lastUserId != currentUser.id) ||
+            (lastProvider != null && lastProvider != currentProvider))) {
+      await prefs.remove('user.firstName');
+      await prefs.remove('user.lastName');
+      await prefs.remove('user.middleName');
+      await prefs.remove('user.contactNumber');
+      await prefs.remove('user.fullName');
+    }
+    if (currentUser != null) {
+      await prefs.setString('user.lastActiveId', currentUser.id);
+    }
+    if (currentProvider != null) {
+      await prefs.setString('user.lastAuthProvider', currentProvider);
+    }
+
+    final savedFirst = prefs.getString('user.firstName');
+    final savedLast = prefs.getString('user.lastName');
+    final savedMiddle = prefs.getString('user.middleName');
+    final savedContact = prefs.getString('user.contactNumber');
+
     final profile = await SocialAuth.instance.getProfile();
-    if (!mounted || profile == null) return;
-    final name = profile.fullName;
+    if (!mounted) return;
+    final name = currentUser?.displayName ??
+        profile?.fullName ??
+        prefs.getString('user.fullName');
     if (name != null && name.trim().isNotEmpty) {
       final parts = name.trim().split(' ');
       setState(() {
-        _firstName = parts.isNotEmpty ? parts.first : _firstName;
-        _lastName = parts.length > 1 ? parts.sublist(1).join(' ') : '';
+        _firstName = savedFirst ??
+            (parts.isNotEmpty
+                ? (parts.first.contains('@')
+                    ? parts.first.split('@').first
+                    : parts.first)
+                : 'User');
+        _lastName =
+            savedLast ?? (parts.length > 1 ? parts.sublist(1).join(' ') : '');
+        if (savedMiddle != null && savedMiddle.isNotEmpty) {
+          _middleName = savedMiddle;
+        }
+        if (savedContact != null && savedContact.isNotEmpty) {
+          _contactNumber = savedContact;
+        }
+        if (currentUser?.email != null && currentUser!.email!.isNotEmpty) {
+          _email = currentUser.email!;
+        }
+      });
+    } else if (savedFirst != null || savedLast != null) {
+      setState(() {
+        if (savedFirst != null) _firstName = savedFirst;
+        if (savedLast != null) _lastName = savedLast;
+        if (savedMiddle != null) _middleName = savedMiddle;
+        if (savedContact != null) _contactNumber = savedContact;
+        if (currentUser?.email != null && currentUser!.email!.isNotEmpty) {
+          _email = currentUser.email!;
+        }
       });
     }
   }
@@ -306,22 +360,39 @@ class _ProfileTabState extends State<ProfileTab> {
   }
 
   void _openManageAccount() {
+    final initialFirst = _firstName.contains('@')
+        ? _firstName.split('@').first
+        : _firstName;
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (context) => ManageAccountPage(
-          initialFirstName: _firstName,
+          initialFirstName: initialFirst,
           initialLastName: _lastName,
           initialMiddleName: _middleName,
           initialEmail: _email,
           initialContactNumber: _contactNumber,
-          onSaved: (updated) {
-            setState(() {
-              _firstName = updated['firstName'] ?? _firstName;
-              _lastName = updated['lastName'] ?? _lastName;
-              _middleName = updated['middleName'] ?? _middleName;
-              _email = updated['email'] ?? _email;
-              _contactNumber = updated['contactNumber'] ?? _contactNumber;
-            });
+          onSaved: (updated) async {
+            final fName = updated['firstName'] ?? _firstName;
+            final lName = updated['lastName'] ?? _lastName;
+            final mName = updated['middleName'] ?? _middleName;
+            final email = updated['email'] ?? _email;
+            final contact = updated['contactNumber'] ?? _contactNumber;
+
+            final prefs = await SharedPreferences.getInstance();
+            await prefs.setString('user.firstName', fName);
+            await prefs.setString('user.lastName', lName);
+            await prefs.setString('user.middleName', mName);
+            await prefs.setString('user.contactNumber', contact);
+
+            if (mounted) {
+              setState(() {
+                _firstName = fName;
+                _lastName = lName;
+                _middleName = mName;
+                _email = email;
+                _contactNumber = contact;
+              });
+            }
           },
         ),
       ),
@@ -515,7 +586,7 @@ class _ProfileTabState extends State<ProfileTab> {
                 ),
                 const SizedBox(height: 10),
                 const Text(
-                  'Searching for POISE-BLE-8492 nearby...\nPlease ensure the device is powered on.',
+                  'Searching for POISE Device nearby...\nPlease ensure the device is powered on.',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     color: Color(0xFF0F1E29),
@@ -723,6 +794,9 @@ class _ProfileTabState extends State<ProfileTab> {
   }
 
   void _showDeleteAccountOverlay(BuildContext context) {
+    final inputController = TextEditingController();
+    final isOAuth = SocialAuth.instance.isOAuthUser;
+
     showDialog<void>(
       context: context,
       barrierColor: Colors.black.withValues(alpha: 0.6),
@@ -757,9 +831,11 @@ class _ProfileTabState extends State<ProfileTab> {
                   ),
                 ),
                 const SizedBox(height: 10),
-                const Text(
-                  'Are you sure you want to delete your account?\nThis action cannot be undone. Please enter your password to confirm.',
-                  style: TextStyle(
+                Text(
+                  isOAuth
+                      ? 'Are you sure you want to delete your account?\nThis action cannot be undone. To confirm, please type DELETE below.'
+                      : 'Are you sure you want to delete your account?\nThis action cannot be undone. Please enter your password to confirm.',
+                  style: const TextStyle(
                     color: Color(0xFF0F1E29),
                     fontSize: 12.5,
                     height: 1.4,
@@ -778,7 +854,8 @@ class _ProfileTabState extends State<ProfileTab> {
                   padding: const EdgeInsets.symmetric(horizontal: 14),
                   alignment: Alignment.center,
                   child: TextField(
-                    obscureText: true,
+                    controller: inputController,
+                    obscureText: !isOAuth,
                     style: const TextStyle(
                       color: Color(0xFF0F1E29),
                       fontSize: 14,
@@ -786,7 +863,7 @@ class _ProfileTabState extends State<ProfileTab> {
                     decoration: InputDecoration(
                       isDense: true,
                       border: InputBorder.none,
-                      hintText: 'Password',
+                      hintText: isOAuth ? 'Type DELETE to confirm' : 'Password',
                       hintStyle: TextStyle(
                         color: const Color(0xFF0F1E29).withValues(alpha: 0.55),
                         fontSize: 14,
@@ -801,14 +878,61 @@ class _ProfileTabState extends State<ProfileTab> {
                       child: SizedBox(
                         height: 44,
                         child: ElevatedButton(
-                          onPressed: () {
+                          onPressed: () async {
+                            final input = inputController.text.trim();
+                            if (isOAuth) {
+                              if (input != 'DELETE') {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text(
+                                        'Please type DELETE to confirm account deletion.'),
+                                    behavior: SnackBarBehavior.floating,
+                                  ),
+                                );
+                                return;
+                              }
+                            } else {
+                              if (input.isEmpty) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text(
+                                        'Please enter your password to confirm account deletion.'),
+                                    behavior: SnackBarBehavior.floating,
+                                  ),
+                                );
+                                return;
+                              }
+                            }
+
                             Navigator.pop(dialogContext);
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text('Account deleted'),
-                                behavior: SnackBarBehavior.floating,
-                              ),
-                            );
+                            try {
+                              await SocialAuth.instance
+                                  .deleteAccount(password: isOAuth ? null : input);
+                              if (!context.mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('Account deleted successfully.'),
+                                  behavior: SnackBarBehavior.floating,
+                                ),
+                              );
+                              Navigator.of(context, rootNavigator: true)
+                                  .pushAndRemoveUntil(
+                                MaterialPageRoute(
+                                    builder: (_) => const OptionPage()),
+                                (route) => false,
+                              );
+                            } catch (e) {
+                              if (!context.mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(e
+                                      .toString()
+                                      .replaceAll('Exception: ', '')
+                                      .replaceAll('SignInFailure: ', '')),
+                                  behavior: SnackBarBehavior.floating,
+                                ),
+                              );
+                            }
                           },
                           style: ElevatedButton.styleFrom(
                             backgroundColor:
@@ -922,14 +1046,29 @@ class _ProfileTabState extends State<ProfileTab> {
                       child: SizedBox(
                         height: 44,
                         child: ElevatedButton(
-                          onPressed: () {
+                          onPressed: () async {
                             Navigator.pop(dialogContext);
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text('All posture data deleted'),
-                                behavior: SnackBarBehavior.floating,
-                              ),
-                            );
+                            try {
+                              await SocialAuth.instance.deleteAllData();
+                              if (!context.mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('All posture data deleted'),
+                                  behavior: SnackBarBehavior.floating,
+                                ),
+                              );
+                              if (mounted) {
+                                setState(() {});
+                              }
+                            } catch (e) {
+                              if (!context.mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(e.toString().replaceAll('Exception: ', '')),
+                                  behavior: SnackBarBehavior.floating,
+                                ),
+                              );
+                            }
                           },
                           style: ElevatedButton.styleFrom(
                             backgroundColor:
@@ -999,12 +1138,13 @@ class _ProfileTabState extends State<ProfileTab> {
         padding: const EdgeInsets.only(bottom: 76),
         child: SingleChildScrollView(
           key: const PageStorageKey('profile-scroll'),
+          physics: const BouncingScrollPhysics(),
           padding: const EdgeInsets.fromLTRB(14, 8, 14, 16),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const PoiseHeader(),
-              const SizedBox(height: 14),
+              const SizedBox(height: 12),
               const Text(
                 'Profile',
                 style: TextStyle(
@@ -1013,7 +1153,7 @@ class _ProfileTabState extends State<ProfileTab> {
                   fontWeight: FontWeight.bold,
                 ),
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: 12),
 
               // ── User Card / Guest Card ──
               if (_isGuest)
@@ -1711,9 +1851,16 @@ class _ManageAccountPageState extends State<ManageAccountPage> {
       lastName,
     ].where((s) => s.isNotEmpty).join(' ');
 
+    final contactNumber = _contactController.text.trim();
     if (fullName.isNotEmpty) {
       try {
-        await SocialAuth.instance.updateProfile(fullName: fullName);
+        await SocialAuth.instance.updateProfile(
+          fullName: fullName,
+          firstName: firstName,
+          lastName: lastName,
+          middleName: middleName,
+          contactNumber: contactNumber,
+        );
       } catch (error) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(

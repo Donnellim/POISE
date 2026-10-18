@@ -32,7 +32,9 @@ class SyncService {
   Future<bool> syncToCloud() async {
     final client = _supabase;
     if (client == null) {
-      // Offline or unauthenticated; local buffering remains untouched.
+      lastError.value =
+          'Cloud sync requires an active account. Please sign in or register to sync your posture data to the cloud.';
+      status.value = SyncStatus.error;
       return false;
     }
 
@@ -45,39 +47,117 @@ class SyncService {
       final localDb = PoiseLocalDatabase.instance;
       final userId = client.auth.currentUser?.id;
       if (userId == null) {
-        status.value = SyncStatus.idle;
+        lastError.value = 'User authentication session is missing. Please sign in again.';
+        status.value = SyncStatus.error;
         return false;
       }
 
-      // 0. Ensure default modes exist in Supabase Cloud
+      // 0. Ensure user profile exists in Supabase Cloud
+      final currentUser = client.auth.currentUser;
+      final meta = currentUser?.userMetadata ?? {};
+      final name = meta['full_name'] ??
+          meta['name'] ??
+          currentUser?.email?.split('@').first ??
+          'User';
+      final now = DateTime.now().toUtc();
+      final createdAt =
+          DateTime.tryParse(currentUser?.createdAt ?? '')?.toUtc() ?? now;
+
+      try {
+        await client.from('profiles').upsert({
+          'id': ensureUuid(userId),
+          'full_name': name,
+          'created_at': createdAt.toIso8601String(),
+          'updated_at': now.toIso8601String(),
+        });
+      } catch (e) {
+        debugPrint('Sync profile ensure warning: $e');
+      }
+
+      // 0.1 Ensure default modes exist in Supabase Cloud
       try {
         for (final mode in ModeModel.defaultModes) {
           await client.from('modes').upsert(mode.toMap());
         }
       } catch (_) {}
 
+      final unsyncedSessions = await localDb.getUnsyncedSessions();
+
       // 1. Sync paired devices first so foreign key constraints on sessions succeed
-      final devices = await localDb.getDevicesForUser(userId);
-      if (devices.isNotEmpty) {
-        for (final device in devices) {
-          try {
-            await client.from('devices').upsert(device.toSupabaseMap());
-          } catch (_) {}
+      final localDevices = await localDb.getAllDevices();
+      final targetDevices = <String, DeviceModel>{};
+      for (final d in localDevices) {
+        final normalizedName = (d.deviceName.isEmpty ||
+                d.deviceName.toUpperCase().contains('POISE-BLE') ||
+                d.deviceName.toUpperCase().contains('SIMULATED') ||
+                d.deviceName.toUpperCase().contains('P.O.I.S.E.'))
+            ? 'POISE Device'
+            : d.deviceName;
+        targetDevices[d.id] = DeviceModel(
+          id: d.id,
+          userId: userId,
+          deviceName: normalizedName,
+          pairedAt: d.pairedAt,
+          lastSeenAt: d.lastSeenAt,
+          updatedAt: d.updatedAt,
+        );
+      }
+
+      // Default fallback device for any sessions started without a paired BLE device
+      final defaultDeviceId = ensureUuid('poise-device-$userId');
+      targetDevices[defaultDeviceId] ??= DeviceModel(
+        id: defaultDeviceId,
+        userId: userId,
+        deviceName: 'POISE Device',
+        pairedAt: DateTime.now(),
+        lastSeenAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      );
+
+      // Also ensure devices referenced by unsynced sessions exist
+      for (final s in unsyncedSessions) {
+        final devId = (s.deviceId != null && s.deviceId!.trim().isNotEmpty)
+            ? s.deviceId!
+            : defaultDeviceId;
+        if (!targetDevices.containsKey(devId)) {
+          targetDevices[devId] = DeviceModel(
+            id: devId,
+            userId: userId,
+            deviceName: 'POISE Device',
+            pairedAt: s.startedAt,
+            lastSeenAt: s.updatedAt,
+            updatedAt: s.updatedAt,
+          );
         }
       }
 
-      // 2. Push un-synced sessions (re-mapping any 'local_user' to current userId)
-      final unsyncedSessions = await localDb.getUnsyncedSessions();
+      for (final device in targetDevices.values) {
+        try {
+          await client.from('devices').upsert(device.toSupabaseMap());
+        } catch (_) {}
+      }
+
+      // Repair local records in case any had null/empty deviceId
+      try {
+        await localDb.repairNullSessionDevices(defaultDeviceId);
+      } catch (_) {}
+
+      // 2. Push un-synced sessions (re-mapping any mismatched user IDs to current userId and guaranteeing non-null deviceId)
       if (unsyncedSessions.isNotEmpty) {
         final sessionsToSync = unsyncedSessions.map((s) {
-          if (s.userId == 'local_user' || s.userId.isEmpty) {
-            return s.copyWith(userId: userId);
+          var mapped = s;
+          if (mapped.userId != userId) {
+            mapped = mapped.copyWith(userId: userId);
           }
-          return s;
+          if (mapped.deviceId == null || mapped.deviceId!.trim().isEmpty) {
+            mapped = mapped.copyWith(deviceId: defaultDeviceId);
+          }
+          return mapped;
         }).toList();
 
-        final sessionPayloads =
-            sessionsToSync.map((s) => s.toSupabaseMap()).toList();
+        final sessionPayloads = sessionsToSync
+            .map((s) => s.toSupabaseMap(fallbackDeviceId: defaultDeviceId))
+            .toList();
         await client.from('sessions').upsert(sessionPayloads);
         await localDb
             .markSessionsSynced(unsyncedSessions.map((s) => s.id).toList());
@@ -101,6 +181,21 @@ class SyncService {
       lastSyncTime.value = DateTime.now();
       status.value = SyncStatus.success;
       return true;
+    } on PostgrestException catch (e) {
+      if (e.code == '23503' && (e.message.contains('modes') || e.details?.toString().contains('modes') == true)) {
+        lastError.value =
+            'The "modes" table is empty in Supabase. Please run the SQL seed in your Supabase SQL editor.';
+      } else if (e.code == '42P01') {
+        lastError.value =
+            'A required database table is missing in Supabase. Please execute supabase_schema.sql in your Supabase project.';
+      } else if (e.code == '42501') {
+        lastError.value =
+            'Supabase Row Level Security policy blocked write. Please verify RLS policies in Supabase.';
+      } else {
+        lastError.value = 'Supabase sync error (${e.code}): ${e.message}';
+      }
+      status.value = SyncStatus.error;
+      return false;
     } catch (e) {
       lastError.value = e.toString();
       status.value = SyncStatus.error;
@@ -195,6 +290,95 @@ class SyncService {
       if (status.value == SyncStatus.syncing) {
         status.value = SyncStatus.idle;
       }
+    }
+  }
+
+  /// Deletes all sessions, posture events, and devices from Supabase Cloud for the authenticated user.
+  Future<bool> deleteAllCloudData() async {
+    final client = _supabase;
+    final userId = client?.auth.currentUser?.id;
+    if (client == null || userId == null) return false;
+
+    try {
+      // 1. Try calling the PostgreSQL RPC function delete_user_posture_data()
+      try {
+        await client.rpc('delete_user_posture_data');
+        return true;
+      } catch (_) {
+        // Fallback: Delete rows directly via tables
+      }
+
+      // Fetch user's session IDs to delete associated posture events
+      final sessionsResponse = await client
+          .from('sessions')
+          .select('id')
+          .eq('user_id', userId);
+      final sessionIds = (sessionsResponse as List)
+          .map((s) => s['id'] as String)
+          .toList();
+
+      if (sessionIds.isNotEmpty) {
+        const chunkSize = 50;
+        for (int i = 0; i < sessionIds.length; i += chunkSize) {
+          final chunk = sessionIds.sublist(
+            i,
+            i + chunkSize > sessionIds.length ? sessionIds.length : i + chunkSize,
+          );
+          await client
+              .from('posture_events')
+              .delete()
+              .inFilter('session_id', chunk);
+        }
+      }
+
+      // Delete user's sessions
+      await client.from('sessions').delete().eq('user_id', userId);
+
+      // Delete user's devices
+      await client.from('devices').delete().eq('user_id', userId);
+
+      return true;
+    } catch (e) {
+      debugPrint('[SyncService] deleteAllCloudData error: $e');
+      lastError.value = e.toString();
+      return false;
+    }
+  }
+
+  /// Deletes the user's account and all associated cloud data from Supabase.
+  Future<bool> deleteUserAccount() async {
+    final client = _supabase;
+    final userId = client?.auth.currentUser?.id;
+    if (client == null || userId == null) return false;
+
+    try {
+      // 1. Delete all user posture telemetry and devices first
+      await deleteAllCloudData();
+
+      // 2. Call the PostgreSQL RPC function delete_user_account()
+      try {
+        await client.rpc('delete_user_account');
+      } on PostgrestException catch (e) {
+        debugPrint('[SyncService] delete_user_account RPC error: ${e.message}');
+        if (e.code == 'PGRST202' || e.message.contains('not find the function')) {
+          throw Exception(
+            'The delete_user_account() SQL function is missing in your Supabase project. '
+            'Please run the delete_user_account function in your Supabase SQL Editor.',
+          );
+        }
+        rethrow;
+      }
+
+      // 3. Delete profile directly as a secondary safeguard
+      try {
+        await client.from('profiles').delete().eq('id', userId);
+      } catch (_) {}
+
+      return true;
+    } catch (e) {
+      debugPrint('[SyncService] deleteUserAccount error: $e');
+      lastError.value = e.toString();
+      throw Exception('Failed to delete user account: ${e.toString().replaceAll('Exception: ', '')}');
     }
   }
 }

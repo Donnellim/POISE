@@ -143,7 +143,7 @@ void main() {
     expect(find.text('Searching for P.O.I.S.E. Device'), findsOneWidget);
     expect(
         find.text(
-            'Searching for POISE-BLE-8492 nearby...\nPlease ensure the device is powered on.'),
+            'Searching for POISE Device nearby...\nPlease ensure the device is powered on.'),
         findsOneWidget);
 
     // Advance search timer
