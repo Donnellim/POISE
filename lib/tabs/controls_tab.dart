@@ -37,9 +37,8 @@ class _ControlsTabState extends State<ControlsTab> {
   @override
   void initState() {
     super.initState();
-    _vibrationEnabled =
-        widget.vibrationEnabled ?? !(widget.phoneNotificationEnabled ?? false);
-    _notificationEnabled = !_vibrationEnabled;
+    _vibrationEnabled = widget.vibrationEnabled ?? true;
+    _notificationEnabled = widget.phoneNotificationEnabled ?? false;
     _notificationPermissionGranted =
         widget.notificationPermissionGranted ?? true;
   }
@@ -74,8 +73,7 @@ class _ControlsTabState extends State<ControlsTab> {
           child: Container(
             padding: const EdgeInsets.fromLTRB(22, 26, 22, 22),
             decoration: BoxDecoration(
-              color: const Color(
-                  0xFF45A6B8), // Teal/cyan overlay color matching mockups
+              color: const Color(0xFF45A6B8),
               borderRadius: BorderRadius.circular(26),
               boxShadow: [
                 BoxShadow(
@@ -134,10 +132,8 @@ class _ControlsTabState extends State<ControlsTab> {
                             setState(() {
                               _notificationPermissionGranted = true;
                               _notificationEnabled = true;
-                              _vibrationEnabled = false;
                             });
                             widget.onRequestNotificationPermission?.call();
-                            widget.onVibrationChanged?.call(false);
                             widget.onPhoneNotificationChanged?.call(true);
                             final messenger = ScaffoldMessenger.of(context);
                             messenger.clearSnackBars();
@@ -148,7 +144,7 @@ class _ControlsTabState extends State<ControlsTab> {
                                 ),
                                 behavior: SnackBarBehavior.floating,
                                 margin: EdgeInsets.only(
-                                  bottom: 80,
+                                  bottom: 12,
                                   left: 16,
                                   right: 16,
                                 ),
@@ -157,8 +153,7 @@ class _ControlsTabState extends State<ControlsTab> {
                             );
                           },
                           style: ElevatedButton.styleFrom(
-                            backgroundColor:
-                                const Color(0xFF388AF6), // Royal blue button
+                            backgroundColor: const Color(0xFF388AF6),
                             foregroundColor: Colors.white,
                             elevation: 0,
                             shape: RoundedRectangleBorder(
@@ -184,8 +179,7 @@ class _ControlsTabState extends State<ControlsTab> {
                             Navigator.of(dialogContext).pop();
                           },
                           style: ElevatedButton.styleFrom(
-                            backgroundColor:
-                                const Color(0xFF1E1E1E), // Dark charcoal button
+                            backgroundColor: const Color(0xFF1E1E1E),
                             foregroundColor: Colors.white,
                             elevation: 0,
                             shape: RoundedRectangleBorder(
@@ -212,180 +206,65 @@ class _ControlsTabState extends State<ControlsTab> {
     );
   }
 
-  void _selectFeedback(bool vibration) {
-    if (!vibration && !_notificationPermissionGranted) {
-      _showNotificationPermissionDialog();
-      return;
-    }
-    setState(() {
-      _vibrationEnabled = vibration;
-      _notificationEnabled = !vibration;
-    });
-    widget.onVibrationChanged?.call(vibration);
-    widget.onPhoneNotificationChanged?.call(!vibration);
+  void _onVibrationToggled(bool value) {
+    setState(() => _vibrationEnabled = value);
+    widget.onVibrationChanged?.call(value);
     final messenger = ScaffoldMessenger.of(context);
     messenger.clearSnackBars();
     messenger.showSnackBar(SnackBar(
-      content: Text(vibration
-          ? 'Phone notification turned off. Device vibration enabled to maintain posture feedback.'
-          : 'Device vibration turned off. Phone notification enabled to maintain posture feedback.'),
+      content: Text(value
+          ? 'Device vibration feedback enabled.'
+          : 'Device vibration feedback disabled.'),
       behavior: SnackBarBehavior.floating,
       margin: const EdgeInsets.only(bottom: 80, left: 16, right: 16),
       duration: const Duration(seconds: 2),
     ));
   }
 
-  void _onVibrationToggled(bool value) => _selectFeedback(value);
-  void _onPhoneNotificationToggled(bool value) => _selectFeedback(!value);
-
-  void _showModeOverlay(ActivityMode mode) {
-    showDialog<void>(
-      context: context,
-      barrierColor: Colors.black.withValues(alpha: 0.6),
-      builder: (dialogContext) {
-        return Dialog(
-          backgroundColor: Colors.transparent,
-          elevation: 0,
-          insetPadding: const EdgeInsets.symmetric(horizontal: 26),
-          child: Container(
-            padding: const EdgeInsets.fromLTRB(22, 26, 22, 22),
-            decoration: BoxDecoration(
-              color: const Color(
-                  0xFF45A6B8), // Teal/cyan overlay color matching mockups
-              borderRadius: BorderRadius.circular(26),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.25),
-                  blurRadius: 18,
-                  offset: const Offset(0, 8),
-                ),
-              ],
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  mode.overlayTitle,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    color: Color(0xFF0F1E29),
-                    fontSize: 22,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: 14),
-                Text(
-                  mode.description,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    color: Color(0xFF132F3D),
-                    fontSize: 13.5,
-                    height: 1.35,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-                const SizedBox(height: 24),
-                Row(
-                  children: [
-                    Expanded(
-                      child: SizedBox(
-                        height: 44,
-                        child: ElevatedButton(
-                          onPressed: () {
-                            Navigator.of(dialogContext).pop();
-                            widget.onModeChanged(mode);
-                          },
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor:
-                                const Color(0xFF388AF6), // Royal blue button
-                            foregroundColor: Colors.white,
-                            elevation: 0,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(22),
-                            ),
-                          ),
-                          child: const Text(
-                            'Select',
-                            style: TextStyle(
-                              fontSize: 15.5,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: SizedBox(
-                        height: 44,
-                        child: ElevatedButton(
-                          onPressed: () {
-                            Navigator.of(dialogContext).pop();
-                          },
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor:
-                                const Color(0xFF1E1E1E), // Dark charcoal button
-                            foregroundColor: Colors.white,
-                            elevation: 0,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(22),
-                            ),
-                          ),
-                          child: const Text(
-                            'Cancel',
-                            style: TextStyle(
-                              fontSize: 15.5,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
+  void _onPhoneNotificationToggled(bool value) {
+    if (value && !_notificationPermissionGranted) {
+      _showNotificationPermissionDialog();
+      return;
+    }
+    setState(() => _notificationEnabled = value);
+    widget.onPhoneNotificationChanged?.call(value);
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.clearSnackBars();
+    messenger.showSnackBar(SnackBar(
+      content: Text(value
+          ? 'Phone notification feedback enabled.'
+          : 'Phone notification feedback disabled.'),
+      behavior: SnackBarBehavior.floating,
+      margin: const EdgeInsets.only(bottom: 80, left: 16, right: 16),
+      duration: const Duration(seconds: 2),
+    ));
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.transparent,
-      body: SafeArea(
-        bottom: false,
-        child: Padding(
-          padding:
-              const EdgeInsets.only(left: 14, right: 14, top: 8, bottom: 76),
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              return SizedBox.expand(
-                child: FittedBox(
-                  fit: BoxFit.scaleDown,
-                  alignment: Alignment.topCenter,
-                  child: SizedBox(
-                    width: constraints.maxWidth,
-                    child: _buildControlsContent(context),
-                  ),
-                ),
-              );
-            },
-          ),
+    return Material(
+      color: Colors.transparent,
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: 76),
+        child: SingleChildScrollView(
+          key: const PageStorageKey('controls-scroll'),
+          physics: const BouncingScrollPhysics(),
+          padding: const EdgeInsets.fromLTRB(14, 8, 14, 16),
+          child: _buildControlsContent(context),
         ),
       ),
     );
   }
 
   Widget _buildControlsContent(BuildContext context) {
+    final mode = widget.selectedMode;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
         const PoiseHeader(),
-        const SizedBox(height: 14),
+        const SizedBox(height: 10),
         const Text(
           'Controls',
           style: TextStyle(
@@ -394,13 +273,13 @@ class _ControlsTabState extends State<ControlsTab> {
             fontWeight: FontWeight.bold,
           ),
         ),
-        const SizedBox(height: 14),
+        const SizedBox(height: 10),
 
-        // ── Activity Mode Card ──
+        // ── 1. Activity Mode Container ──
         Container(
-          padding: const EdgeInsets.all(14),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           decoration: BoxDecoration(
-            color: const Color(0xFFA2DDF0), // Light sky cyan container
+            color: const Color(0xFFA2DDF0),
             borderRadius: BorderRadius.circular(16),
           ),
           child: Column(
@@ -410,19 +289,19 @@ class _ControlsTabState extends State<ControlsTab> {
                 'Activity Mode',
                 style: TextStyle(
                   color: Color(0xFF0F1E29),
-                  fontSize: 17,
+                  fontSize: 16.5,
                   fontWeight: FontWeight.bold,
                 ),
               ),
-              const SizedBox(height: 3),
+              const SizedBox(height: 2),
               const Text(
                 'Select the mode based on what you are currently doing.',
                 style: TextStyle(
                   color: Color(0xFF273E4D),
-                  fontSize: 12.5,
+                  fontSize: 11.5,
                 ),
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: 8),
               Row(
                 children: [
                   Expanded(
@@ -431,24 +310,22 @@ class _ControlsTabState extends State<ControlsTab> {
                       title: ActivityMode.normal.label,
                       subtitle: ActivityMode.normal.threshold,
                       isSelected: widget.selectedMode == ActivityMode.normal,
-                      onTap: () => _showModeOverlay(ActivityMode.normal),
-                      onInfoTap: () => _showModeOverlay(ActivityMode.normal),
+                      onTap: () => widget.onModeChanged(ActivityMode.normal),
                     ),
                   ),
-                  const SizedBox(width: 10),
+                  const SizedBox(width: 8),
                   Expanded(
                     child: _ModeCard(
                       icon: ActivityMode.focus.icon,
                       title: ActivityMode.focus.label,
                       subtitle: ActivityMode.focus.threshold,
                       isSelected: widget.selectedMode == ActivityMode.focus,
-                      onTap: () => _showModeOverlay(ActivityMode.focus),
-                      onInfoTap: () => _showModeOverlay(ActivityMode.focus),
+                      onTap: () => widget.onModeChanged(ActivityMode.focus),
                     ),
                   ),
                 ],
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 6),
               Row(
                 children: [
                   Expanded(
@@ -457,19 +334,17 @@ class _ControlsTabState extends State<ControlsTab> {
                       title: ActivityMode.leisure.label,
                       subtitle: ActivityMode.leisure.threshold,
                       isSelected: widget.selectedMode == ActivityMode.leisure,
-                      onTap: () => _showModeOverlay(ActivityMode.leisure),
-                      onInfoTap: () => _showModeOverlay(ActivityMode.leisure),
+                      onTap: () => widget.onModeChanged(ActivityMode.leisure),
                     ),
                   ),
-                  const SizedBox(width: 10),
+                  const SizedBox(width: 8),
                   Expanded(
                     child: _ModeCard(
                       icon: ActivityMode.commuting.icon,
                       title: ActivityMode.commuting.label,
                       subtitle: ActivityMode.commuting.threshold,
                       isSelected: widget.selectedMode == ActivityMode.commuting,
-                      onTap: () => _showModeOverlay(ActivityMode.commuting),
-                      onInfoTap: () => _showModeOverlay(ActivityMode.commuting),
+                      onTap: () => widget.onModeChanged(ActivityMode.commuting),
                     ),
                   ),
                 ],
@@ -477,11 +352,51 @@ class _ControlsTabState extends State<ControlsTab> {
             ],
           ),
         ),
-        const SizedBox(height: 14),
+        const SizedBox(height: 8),
 
-        // ── Feedback Routing Card ──
+        // ── 2. Mode Description Container (Dedicated Section) ──
         Container(
-          padding: const EdgeInsets.all(14),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: const Color(0xFFA2DDF0),
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Description',
+                style: TextStyle(
+                  color: Color(0xFF0F1E29),
+                  fontSize: 16.5,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFBCE7F6),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  mode.description,
+                  style: const TextStyle(
+                    color: Color(0xFF273E4D),
+                    fontSize: 11.5,
+                    height: 1.35,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+
+        // ── 3. Feedback Routing Container ──
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           decoration: BoxDecoration(
             color: const Color(0xFFA2DDF0),
             borderRadius: BorderRadius.circular(16),
@@ -493,15 +408,15 @@ class _ControlsTabState extends State<ControlsTab> {
                 'Feedback Routing',
                 style: TextStyle(
                   color: Color(0xFF0F1E29),
-                  fontSize: 17,
+                  fontSize: 16.5,
                   fontWeight: FontWeight.bold,
                 ),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 6),
               Container(
                 padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 10,
+                  horizontal: 12,
+                  vertical: 6,
                 ),
                 decoration: BoxDecoration(
                   color: const Color(0xFFBCE7F6),
@@ -518,7 +433,7 @@ class _ControlsTabState extends State<ControlsTab> {
                             'Vibration on Device',
                             style: TextStyle(
                               color: Color(0xFF0F1E29),
-                              fontSize: 14,
+                              fontSize: 13.5,
                               fontWeight: FontWeight.bold,
                             ),
                           ),
@@ -527,7 +442,7 @@ class _ControlsTabState extends State<ControlsTab> {
                             'Allow your device to vibrate for alerts.',
                             style: TextStyle(
                               color: Color(0xFF334A58),
-                              fontSize: 11.5,
+                              fontSize: 11,
                             ),
                           ),
                         ],
@@ -539,21 +454,20 @@ class _ControlsTabState extends State<ControlsTab> {
                       thumbIcon: const WidgetStatePropertyAll(Icon(null)),
                       materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                       activeThumbColor: Colors.white,
-                      activeTrackColor: const Color(0xFF388AF6), // Blue when ON
+                      activeTrackColor: const Color(0xFF388AF6),
                       inactiveThumbColor: Colors.white,
-                      inactiveTrackColor:
-                          const Color(0xFF1E1E1E), // Black when OFF
+                      inactiveTrackColor: const Color(0xFF1E1E1E),
                       trackOutlineColor:
                           const WidgetStatePropertyAll(Colors.transparent),
                     ),
                   ],
                 ),
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 6),
               Container(
                 padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 10,
+                  horizontal: 12,
+                  vertical: 6,
                 ),
                 decoration: BoxDecoration(
                   color: const Color(0xFFBCE7F6),
@@ -570,16 +484,16 @@ class _ControlsTabState extends State<ControlsTab> {
                             'Phone Notification',
                             style: TextStyle(
                               color: Color(0xFF0F1E29),
-                              fontSize: 14,
+                              fontSize: 13.5,
                               fontWeight: FontWeight.bold,
                             ),
                           ),
                           SizedBox(height: 2),
                           Text(
-                            'Silence POISE and receive alerts on your phone.',
+                            'Allow your device to send notifications.',
                             style: TextStyle(
                               color: Color(0xFF334A58),
-                              fontSize: 11.5,
+                              fontSize: 11,
                             ),
                           ),
                         ],
@@ -591,10 +505,9 @@ class _ControlsTabState extends State<ControlsTab> {
                       thumbIcon: const WidgetStatePropertyAll(Icon(null)),
                       materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                       activeThumbColor: Colors.white,
-                      activeTrackColor: const Color(0xFF388AF6), // Blue when ON
+                      activeTrackColor: const Color(0xFF388AF6),
                       inactiveThumbColor: Colors.white,
-                      inactiveTrackColor:
-                          const Color(0xFF1E1E1E), // Black when OFF
+                      inactiveTrackColor: const Color(0xFF1E1E1E),
                       trackOutlineColor:
                           const WidgetStatePropertyAll(Colors.transparent),
                     ),
@@ -604,45 +517,7 @@ class _ControlsTabState extends State<ControlsTab> {
             ],
           ),
         ),
-        const SizedBox(height: 14),
-
-        // ── Information Callout Banner ──
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-          decoration: BoxDecoration(
-            color: const Color(0xFF62C2E8),
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: Row(
-            children: [
-              Container(
-                width: 24,
-                height: 24,
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.6),
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(
-                  Icons.info_rounded,
-                  color: Color(0xFF208DBA),
-                  size: 18,
-                ),
-              ),
-              const SizedBox(width: 12),
-              const Expanded(
-                child: Text(
-                  'Feedback is triggered when an incorrect posture is maintained according to the selected activity mode.',
-                  style: TextStyle(
-                    color: Color(0xFF0A2230),
-                    fontSize: 11.5,
-                    height: 1.35,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
+        const SizedBox(height: 8),
       ],
     );
   }
@@ -654,7 +529,6 @@ class _ModeCard extends StatelessWidget {
   final String subtitle;
   final bool isSelected;
   final VoidCallback onTap;
-  final VoidCallback onInfoTap;
 
   const _ModeCard({
     required this.icon,
@@ -662,7 +536,6 @@ class _ModeCard extends StatelessWidget {
     required this.subtitle,
     required this.isSelected,
     required this.onTap,
-    required this.onInfoTap,
   });
 
   @override
@@ -671,7 +544,7 @@ class _ModeCard extends StatelessWidget {
       onTap: onTap,
       behavior: HitTestBehavior.opaque,
       child: Container(
-        height: 78,
+        height: 56,
         decoration: BoxDecoration(
           color: isSelected ? const Color(0xFFD6EEF8) : const Color(0xFFE8ECEF),
           borderRadius: BorderRadius.circular(12),
@@ -690,27 +563,25 @@ class _ModeCard extends StatelessWidget {
         child: Stack(
           children: [
             Positioned(
-              top: 6,
-              right: 6,
-              child: GestureDetector(
-                onTap: onInfoTap,
-                behavior: HitTestBehavior.opaque,
-                child: Container(
-                  width: 17,
-                  height: 17,
-                  decoration: const BoxDecoration(
-                    color: Color(0xFF1E1E1E),
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Center(
-                    child: Text(
-                      'i',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 10.5,
-                        fontWeight: FontWeight.bold,
-                        fontFamily: 'serif',
-                      ),
+              top: 5,
+              right: 5,
+              child: Container(
+                width: 16,
+                height: 16,
+                decoration: BoxDecoration(
+                  color: isSelected
+                      ? const Color(0xFF388AF6)
+                      : const Color(0xFF1E1E1E),
+                  shape: BoxShape.circle,
+                ),
+                child: const Center(
+                  child: Text(
+                    'i',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                      fontFamily: 'serif',
                     ),
                   ),
                 ),
@@ -718,10 +589,10 @@ class _ModeCard extends StatelessWidget {
             ),
             Padding(
               padding: const EdgeInsets.only(
-                  left: 10, right: 24, top: 10, bottom: 10),
+                  left: 8, right: 20, top: 6, bottom: 6),
               child: Row(
                 children: [
-                  Icon(icon, color: const Color(0xFF0F1E29), size: 28),
+                  Icon(icon, color: const Color(0xFF0F1E29), size: 24),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Column(

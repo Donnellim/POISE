@@ -32,25 +32,34 @@ class SignInPage extends StatelessWidget {
               // ── Top Section: Logo + Title ──
               Expanded(
                 flex: 3,
-                child: Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Image.asset(
-                        'assets/images/P.O.I.S.E. Logo 1.png',
-                        width: effectiveWidth * 0.35,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 20, vertical: 4),
+                  child: Center(
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Image.asset(
+                            'assets/images/P.O.I.S.E. Logo 1.png',
+                            width: (effectiveWidth * 0.35).clamp(100.0, 140.0),
+                            height: 90,
+                            fit: BoxFit.contain,
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            'P.O.I.S.E.',
+                            style: TextStyle(
+                              color: Colors.black,
+                              fontSize: (effectiveWidth * 0.1).clamp(32.0, 42.0),
+                              fontWeight: FontWeight.w900,
+                              letterSpacing: 1.5,
+                            ),
+                          ),
+                        ],
                       ),
-                      const SizedBox(height: 8),
-                      Text(
-                        'P.O.I.S.E.',
-                        style: TextStyle(
-                          color: Colors.black,
-                          fontSize: effectiveWidth * 0.1,
-                          fontWeight: FontWeight.w900,
-                          letterSpacing: 1.5,
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
                 ),
               ),

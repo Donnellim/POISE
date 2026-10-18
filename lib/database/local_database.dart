@@ -5,6 +5,7 @@ import 'package:sqflite/sqflite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:sqflite_common_ffi_web/sqflite_ffi_web.dart';
 import 'models.dart';
+import '../analytics/analytics_data.dart';
 
 /// Singleton manager for the local SQFlite database on mobile (Android/iOS) and web.
 /// Implements the offline-first buffer and persistent store matching the POISE ERD.
@@ -16,6 +17,13 @@ class PoiseLocalDatabase {
   static const int dbVersion = 1;
 
   Database? _db;
+
+  /// Change notification bus for real-time mirroring to UI components (e.g. AnalyticsTab).
+  final ValueNotifier<int> onDatabaseChanged = ValueNotifier<int>(0);
+
+  void notifyDatabaseChanged() {
+    onDatabaseChanged.value++;
+  }
 
   /// Returns the initialized database, initializing it if necessary.
   Future<Database> get database async {
@@ -137,6 +145,7 @@ class PoiseLocalDatabase {
         started_at TEXT NOT NULL,
         ended_at TEXT,
         updated_at TEXT NOT NULL,
+        baseline_angle REAL NOT NULL DEFAULT 0.0,
         synced INTEGER NOT NULL DEFAULT 0,
         FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE SET NULL,
         FOREIGN KEY (user_id) REFERENCES profiles(id) ON DELETE CASCADE,
@@ -150,6 +159,8 @@ class PoiseLocalDatabase {
         id TEXT PRIMARY KEY,
         session_id TEXT NOT NULL,
         occurred_at TEXT NOT NULL,
+        corrected_at TEXT,
+        correction_time_sec REAL,
         tilt_angle REAL NOT NULL,
         duration_sec REAL NOT NULL,
         feedback_triggered INTEGER NOT NULL DEFAULT 1,
@@ -180,6 +191,19 @@ class PoiseLocalDatabase {
   Future<void> _onOpen(Database db) async {
     // Ensure foreign keys are enabled in SQLite
     await db.execute('PRAGMA foreign_keys = ON');
+
+    // Safe auto-migration for existing local tables
+    try {
+      await db.execute(
+          'ALTER TABLE sessions ADD COLUMN baseline_angle REAL NOT NULL DEFAULT 0.0');
+    } catch (_) {}
+    try {
+      await db.execute('ALTER TABLE posture_events ADD COLUMN corrected_at TEXT');
+    } catch (_) {}
+    try {
+      await db.execute(
+          'ALTER TABLE posture_events ADD COLUMN correction_time_sec REAL');
+    } catch (_) {}
 
     // Verify modes are seeded
     final count = Sqflite.firstIntValue(
@@ -225,6 +249,16 @@ class PoiseLocalDatabase {
   Future<void> upsertDevice(DeviceModel device) async {
     final db = await database;
     await db.insert(
+      'profiles',
+      {
+        'id': device.userId,
+        'full_name': 'User',
+        'created_at': device.pairedAt.toIso8601String(),
+        'updated_at': device.updatedAt.toIso8601String(),
+      },
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+    await db.insert(
       'devices',
       device.toMap(),
       conflictAlgorithm: ConflictAlgorithm.replace,
@@ -246,6 +280,12 @@ class PoiseLocalDatabase {
       whereArgs: [userId],
       orderBy: 'last_seen_at DESC',
     );
+    return res.map(DeviceModel.fromMap).toList();
+  }
+
+  Future<List<DeviceModel>> getAllDevices() async {
+    final db = await database;
+    final res = await db.query('devices', orderBy: 'last_seen_at DESC');
     return res.map(DeviceModel.fromMap).toList();
   }
 
@@ -271,6 +311,10 @@ class PoiseLocalDatabase {
   // ===========================================================================
 
   Future<void> insertSession(SessionModel session) async {
+    if (mockRecordsForTesting != null) {
+      notifyDatabaseChanged();
+      return;
+    }
     final db = await database;
     await db.insert(
       'profiles',
@@ -282,28 +326,47 @@ class PoiseLocalDatabase {
       },
       conflictAlgorithm: ConflictAlgorithm.ignore,
     );
-    if (session.deviceId != null) {
-      await db.insert(
-        'devices',
-        {
-          'id': session.deviceId!,
-          'user_id': session.userId,
-          'device_name': 'POISE Device',
-          'paired_at': session.startedAt.toIso8601String(),
-          'last_seen_at': session.startedAt.toIso8601String(),
-          'updated_at': session.startedAt.toIso8601String(),
-        },
-        conflictAlgorithm: ConflictAlgorithm.ignore,
-      );
-    }
+    final effectiveDeviceId =
+        (session.deviceId != null && session.deviceId!.trim().isNotEmpty)
+            ? session.deviceId!
+            : 'POISE-DEVICE';
+    await db.insert(
+      'devices',
+      {
+        'id': effectiveDeviceId,
+        'user_id': session.userId,
+        'device_name': 'POISE Device',
+        'paired_at': session.startedAt.toIso8601String(),
+        'last_seen_at': session.startedAt.toIso8601String(),
+        'updated_at': session.startedAt.toIso8601String(),
+      },
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+    final sessionToInsert =
+        (session.deviceId == null || session.deviceId!.trim().isEmpty)
+            ? session.copyWith(deviceId: effectiveDeviceId)
+            : session;
     await db.insert(
       'sessions',
-      session.toLocalMap(),
+      sessionToInsert.toLocalMap(),
       conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+    notifyDatabaseChanged();
+  }
+
+  Future<void> repairNullSessionDevices(String defaultDeviceId) async {
+    final db = await database;
+    await db.rawUpdate(
+      'UPDATE sessions SET device_id = ? WHERE device_id IS NULL OR device_id = ""',
+      [defaultDeviceId],
     );
   }
 
   Future<void> endSession(String sessionId, DateTime endedAt) async {
+    if (mockRecordsForTesting != null) {
+      notifyDatabaseChanged();
+      return;
+    }
     final db = await database;
     await db.update(
       'sessions',
@@ -315,6 +378,7 @@ class PoiseLocalDatabase {
       where: 'id = ?',
       whereArgs: [sessionId],
     );
+    notifyDatabaseChanged();
   }
 
   Future<SessionModel?> getActiveSession(String userId) async {
@@ -366,6 +430,10 @@ class PoiseLocalDatabase {
   // ===========================================================================
 
   Future<void> insertPostureEvent(PostureEventModel event) async {
+    if (mockRecordsForTesting != null) {
+      notifyDatabaseChanged();
+      return;
+    }
     final db = await database;
     await db.insert(
       'profiles',
@@ -394,10 +462,15 @@ class PoiseLocalDatabase {
       event.toLocalMap(),
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
+    notifyDatabaseChanged();
   }
 
   Future<void> insertPostureEventsBatch(List<PostureEventModel> events) async {
     if (events.isEmpty) return;
+    if (mockRecordsForTesting != null) {
+      notifyDatabaseChanged();
+      return;
+    }
     final db = await database;
     final batch = db.batch();
     for (final event in events) {
@@ -430,6 +503,7 @@ class PoiseLocalDatabase {
       );
     }
     await batch.commit(noResult: true);
+    notifyDatabaseChanged();
   }
 
   Future<List<PostureEventModel>> getUnsyncedPostureEvents({int limit = 100}) async {
@@ -441,6 +515,30 @@ class PoiseLocalDatabase {
       limit: limit,
     );
     return res.map(PostureEventModel.fromMap).toList();
+  }
+
+  Future<void> updatePostureEventCorrection({
+    required String id,
+    required DateTime correctedAt,
+    required double correctionTimeSec,
+  }) async {
+    if (mockRecordsForTesting != null) {
+      notifyDatabaseChanged();
+      return;
+    }
+    final db = await database;
+    await db.update(
+      'posture_events',
+      {
+        'corrected_at': correctedAt.toIso8601String(),
+        'correction_time_sec': correctionTimeSec,
+        'duration_sec': correctionTimeSec,
+        'synced': 0, // Needs re-sync to Supabase cloud
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    notifyDatabaseChanged();
   }
 
   Future<void> markPostureEventsSynced(List<String> ids) async {
@@ -531,6 +629,61 @@ class PoiseLocalDatabase {
     }
 
     await batch.commit(noResult: true);
+    notifyDatabaseChanged();
+  }
+
+  /// Optional mock records list used to bypass raw SQLite I/O during headless widget testing.
+  List<PostureRecord>? mockRecordsForTesting;
+
+  /// Transforms all stored sessions and posture events into structured PostureRecord objects
+  /// for real-time mirroring between the POISE hardware, dashboard monitoring, and Analytics tab.
+  Future<List<PostureRecord>> getAllPostureRecords() async {
+    if (mockRecordsForTesting != null) {
+      return List<PostureRecord>.from(mockRecordsForTesting!);
+    }
+    final db = await database;
+    final res = await db.rawQuery('''
+      SELECT 
+        pe.id,
+        pe.occurred_at,
+        pe.corrected_at,
+        pe.correction_time_sec,
+        pe.tilt_angle,
+        pe.duration_sec,
+        pe.feedback_triggered,
+        s.mode_id
+      FROM posture_events pe
+      LEFT JOIN sessions s ON pe.session_id = s.id
+      ORDER BY pe.occurred_at ASC
+    ''');
+
+    return res.map((row) {
+      final at = DateTime.tryParse(row['occurred_at'] as String? ?? '') ??
+          DateTime.now();
+      final correctedAt = row['corrected_at'] != null
+          ? DateTime.tryParse(row['corrected_at'] as String)
+          : null;
+      final correctionTimeSec =
+          (row['correction_time_sec'] as num?)?.toDouble();
+      final pitch = (row['tilt_angle'] as num?)?.toDouble() ?? 0.0;
+      final durationNum = (row['duration_sec'] as num?)?.toDouble() ?? 1.0;
+      final seconds = durationNum > 0 ? durationNum.round() : 1;
+      final modeId = row['mode_id'] as int? ?? 1;
+      final mode = ModeModel.activityModeFromId(modeId);
+      final feedback = (row['feedback_triggered'] as int? ?? 0) == 1;
+      final isSlouched = pitch.abs() >= mode.angle;
+      final slouchEvents = (feedback || isSlouched) ? 1 : 0;
+      return PostureRecord(
+        at: at,
+        correctedAt: correctedAt,
+        seconds: seconds > 0 ? seconds : 1,
+        pitch: pitch,
+        mode: mode,
+        slouchEvents: slouchEvents,
+        warnings: slouchEvents,
+        correctionSeconds: correctionTimeSec ?? (slouchEvents > 0 ? durationNum : null),
+      );
+    }).toList();
   }
 
   Future<bool> isDatabaseEmpty() async {
@@ -544,12 +697,21 @@ class PoiseLocalDatabase {
     return sessionCount == 0 && eventCount == 0;
   }
 
+  Future<void> clearPostureData() async {
+    final db = await database;
+    await db.delete('posture_events');
+    await db.delete('sessions');
+    await db.delete('devices');
+    notifyDatabaseChanged();
+  }
+
   Future<void> clearAllData() async {
     final db = await database;
     await db.delete('posture_events');
     await db.delete('sessions');
     await db.delete('devices');
     await db.delete('profiles');
+    notifyDatabaseChanged();
   }
 
   Future<void> close() async {

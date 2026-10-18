@@ -6,6 +6,8 @@ import 'package:flutter_application_1/auth/social_sign_in_buttons.dart';
 import 'package:flutter_application_1/sign_in_page.dart';
 import 'package:flutter_application_1/create_account_page.dart';
 
+import 'package:flutter_application_1/sign_in_email_page.dart';
+
 class FakeAuth implements SocialAuthClient {
   final requests = <SocialProvider>[];
   Completer<AuthProfile?> pending = Completer<AuthProfile?>();
@@ -122,4 +124,29 @@ void main() {
           findsOneWidget);
     }
   });
+
+  for (final size in [
+    const Size(360, 640),
+    const Size(500, 600),
+    const Size(1280, 650),
+    const Size(1920, 1080),
+  ]) {
+    testWidgets('Auth entry pages render without overflow at $size',
+        (tester) async {
+      tester.view.physicalSize = size;
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      for (final page in [
+        const SignInPage(),
+        const CreateAccountPage(),
+        const SignInEmailPage(),
+      ]) {
+        await tester.pumpWidget(MaterialApp(home: page));
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+      }
+    });
+  }
 }

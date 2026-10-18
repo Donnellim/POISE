@@ -5,6 +5,7 @@ import '../activity_mode.dart';
 import '../widgets/poise_app_bar.dart';
 import '../analytics/analytics_data.dart';
 import '../analytics/csv_export.dart';
+import '../database/local_database.dart';
 
 const _ink = Color(0xFF073344);
 const _blue = Color(0xFF009CE5);
@@ -26,6 +27,57 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
   bool _showInfo = true;
   bool _preview = false;
   bool _exporting = false;
+  List<PostureRecord> _localRecords = [];
+  bool _isLoadingDb = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.records.isEmpty) {
+      _loadLocalRecords();
+      PoiseLocalDatabase.instance.onDatabaseChanged
+          .addListener(_onDatabaseChanged);
+    }
+  }
+
+  @override
+  void didUpdateWidget(AnalyticsTab oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.records.isNotEmpty) {
+      PoiseLocalDatabase.instance.onDatabaseChanged
+          .removeListener(_onDatabaseChanged);
+    } else if (oldWidget.records.isNotEmpty && widget.records.isEmpty) {
+      _loadLocalRecords();
+      PoiseLocalDatabase.instance.onDatabaseChanged
+          .addListener(_onDatabaseChanged);
+    }
+  }
+
+  @override
+  void dispose() {
+    PoiseLocalDatabase.instance.onDatabaseChanged
+        .removeListener(_onDatabaseChanged);
+    super.dispose();
+  }
+
+  void _onDatabaseChanged() {
+    _loadLocalRecords();
+  }
+
+  Future<void> _loadLocalRecords() async {
+    if (_isLoadingDb) return;
+    _isLoadingDb = true;
+    try {
+      final records = await PoiseLocalDatabase.instance.getAllPostureRecords();
+      if (mounted) {
+        setState(() {
+          _localRecords = records;
+        });
+      }
+    } catch (_) {} finally {
+      _isLoadingDb = false;
+    }
+  }
 
   void _selectPeriod(AnalyticsPeriod period) {
     if (period == AnalyticsPeriod.month || period == AnalyticsPeriod.year) {
@@ -166,23 +218,28 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
     final effectiveNow = _preview
         ? DateTime(now.year, now.month, now.day, 23, 59, 59)
         : now;
+    final activeRecords =
+        widget.records.isNotEmpty ? widget.records : _localRecords;
     final summary = AnalyticsSummary(
-        _preview ? sampleRecords(now) : widget.records, _period, effectiveNow);
+        _preview ? sampleRecords(now) : activeRecords, _period, effectiveNow);
     return DefaultTextStyle(
       style: const TextStyle(color: _ink, fontSize: 12, fontFamily: 'Roboto'),
       child: Padding(
         padding: const EdgeInsets.only(bottom: 76),
         child: SingleChildScrollView(
           key: const PageStorageKey('analytics-scroll'),
-          padding: const EdgeInsets.fromLTRB(12, 14, 12, 24),
+          physics: const BouncingScrollPhysics(),
+          padding: const EdgeInsets.fromLTRB(14, 8, 14, 16),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           const PoiseHeader(),
-          const SizedBox(height: 18),
-          const Padding(
-              padding: EdgeInsets.only(left: 8),
-              child: Text('Analysis',
-                  style: TextStyle(fontSize: 23, fontWeight: FontWeight.bold))),
-          const SizedBox(height: 14),
+          const SizedBox(height: 12),
+          const Text('Analysis',
+              style: TextStyle(
+                color: Color(0xFF0F1E29),
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+              )),
+          const SizedBox(height: 12),
           Container(
             padding: const EdgeInsets.all(5),
             decoration: BoxDecoration(
@@ -251,7 +308,7 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
                     child: Text(
                         _preview
                             ? 'SAMPLE PREVIEW • Not your readings'
-                            : widget.records.isEmpty
+                            : activeRecords.isEmpty
                                 ? 'No recorded sensor data yet'
                                 : 'Recorded sensor data',
                         style: const TextStyle(
