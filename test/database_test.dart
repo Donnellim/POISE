@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:flutter_application_1/database/local_database.dart';
 import 'package:flutter_application_1/database/models.dart';
+import 'package:flutter_application_1/activity_mode.dart';
 
 void main() {
   setUpAll(() {
@@ -223,5 +224,141 @@ void main() {
     final sessionEvents = await PoiseLocalDatabase.instance.getEventsForSession('cloud_sess_1');
     expect(sessionEvents.length, 1);
     expect(sessionEvents.first.tiltAngle, 18.0);
+  });
+
+  test('getAllPostureRecords accurately mirrors dashboard session and slouch events in analytics', () async {
+    final start = DateTime(2026, 10, 18, 9, 0, 0);
+    final now = DateTime(2026, 10, 18, 9, 10, 0); // 600 seconds total
+    final slouchTime = DateTime(2026, 10, 18, 9, 2, 0); // at 120s
+    final correctedTime = DateTime(2026, 10, 18, 9, 2, 15); // 15s slouch
+
+    // Insert session (Focus mode)
+    final session = SessionModel(
+      id: 'mirror_sess_1',
+      deviceId: 'POISE-DEV-TEST',
+      userId: 'mirror_user',
+      modeId: 2, // Focus mode
+      startedAt: start,
+      endedAt: now,
+      updatedAt: now,
+      baselineAngle: 3.5,
+      synced: false,
+    );
+    await PoiseLocalDatabase.instance.insertSession(session);
+
+    // Insert slouch event with correction
+    final slouch = PostureEventModel(
+      id: 'mirror_evt_1',
+      sessionId: 'mirror_sess_1',
+      occurredAt: slouchTime,
+      correctedAt: correctedTime,
+      correctionTimeSec: 15.0,
+      tiltAngle: 21.0,
+      durationSec: 15.0,
+      feedbackTriggered: true,
+      synced: false,
+    );
+    await PoiseLocalDatabase.instance.insertPostureEvent(slouch);
+
+    final records = await PoiseLocalDatabase.instance.getAllPostureRecords();
+    expect(records.isNotEmpty, true);
+
+    // Verify analytics summary metrics matching dashboard session
+    final totalSec = records.fold(0, (sum, r) => sum + r.seconds);
+    expect(totalSec, 600); // 10 minutes session total
+
+    final slouchedSec = records.where((r) => r.slouched).fold(0, (sum, r) => sum + r.seconds);
+    expect(slouchedSec, 15); // 15s slouch
+
+    final neutralSec = records.where((r) => !r.slouched).fold(0, (sum, r) => sum + r.seconds);
+    expect(neutralSec, 585); // 585s neutral
+
+    final warnings = records.fold(0, (sum, r) => sum + r.warnings);
+    expect(warnings, 1);
+
+    final slouchRecords = records.where((r) => r.correctionSeconds != null).toList();
+    expect(slouchRecords.length, 1);
+    expect(slouchRecords.first.correctionSeconds, 15.0);
+    expect(slouchRecords.first.correctedAt, correctedTime);
+    expect(slouchRecords.first.mode, ActivityMode.focus);
+  });
+
+  test('Active ongoing session reflects elapsed wear time in analytics before ending', () async {
+    final start = DateTime(2026, 10, 18, 10, 0, 0);
+    final now = DateTime(2026, 10, 18, 10, 5, 0); // 300 seconds elapsed
+
+    final activeSession = SessionModel(
+      id: 'active_sess_live',
+      deviceId: 'POISE-LIVE-DEV',
+      userId: 'live_user',
+      modeId: 3, // Leisure mode
+      startedAt: start,
+      endedAt: null, // Still running live on dashboard
+      updatedAt: now,
+      baselineAngle: 0.0,
+      synced: false,
+    );
+    await PoiseLocalDatabase.instance.insertSession(activeSession);
+
+    final records = await PoiseLocalDatabase.instance.getAllPostureRecords();
+    final activeRecords = records.where((r) => r.mode == ActivityMode.leisure).toList();
+    expect(activeRecords.isNotEmpty, true);
+
+    final leisureSec = activeRecords.fold(0, (sum, r) => sum + r.seconds);
+    expect(leisureSec, 300); // Exactly reflects 5 minutes (300s)
+
+    // Update active session progress and mode
+    var dbChangedCount = 0;
+    void listener() => dbChangedCount++;
+    PoiseLocalDatabase.instance.onDatabaseChanged.addListener(listener);
+
+    await PoiseLocalDatabase.instance.updateSessionProgress('active_sess_live', now.add(const Duration(seconds: 30)));
+    expect(dbChangedCount, 1);
+
+    await PoiseLocalDatabase.instance.updateSessionMode('active_sess_live', 1); // switch to Normal mode
+    expect(dbChangedCount, 2);
+
+    PoiseLocalDatabase.instance.onDatabaseChanged.removeListener(listener);
+  });
+
+  test('Standalone POISE device running before app connection reflects 1:1 wear time and session elapsed', () async {
+    final now = DateTime.now();
+    const standaloneDurationSec = 29; // Hardware device ran 29s standalone before connecting
+    final deviceSessionStart = now.subtract(const Duration(seconds: standaloneDurationSec));
+
+    // POISE BLE service or LittleFS inserts session upon connection with device duration
+    final deviceSession = SessionModel(
+      id: 'poise_hardware_standalone_sess',
+      deviceId: 'POISE-DEVICE',
+      userId: 'test_user',
+      modeId: 1, // Normal mode
+      startedAt: deviceSessionStart,
+      endedAt: null, // Active ongoing session from device
+      updatedAt: now,
+      baselineAngle: 15.0, // Calibrated pitch baseline
+      synced: false,
+    );
+    await PoiseLocalDatabase.instance.insertSession(deviceSession);
+
+    // 1. Verify latest active session is detected by Dashboard
+    final latestActive = await PoiseLocalDatabase.instance.getLatestActiveSession();
+    expect(latestActive, isNotNull);
+    expect(latestActive!.id, 'poise_hardware_standalone_sess');
+    expect(latestActive.baselineAngle, 15.0);
+
+    // 2. Verify Analytics records reflect exact 29s wear time
+    final records = await PoiseLocalDatabase.instance.getAllPostureRecords();
+    expect(records.isNotEmpty, true);
+    final totalWearSec = records.fold(0, (sum, r) => sum + r.seconds);
+    expect(totalWearSec, standaloneDurationSec); // 1:1 match: 29s
+
+    // 3. Verify today total wear seconds equals 29s
+    final todaySec = await PoiseLocalDatabase.instance.getTodayTotalWearSeconds();
+    expect(todaySec, standaloneDurationSec); // 1:1 match: 29s
+
+    // 4. When session is ended, wear time remains preserved at 29s
+    await PoiseLocalDatabase.instance.endSession('poise_hardware_standalone_sess', now);
+    final endedTodaySec = await PoiseLocalDatabase.instance.getTodayTotalWearSeconds();
+    expect(endedTodaySec, standaloneDurationSec); // 29s
   });
 }

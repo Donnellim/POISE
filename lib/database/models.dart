@@ -254,7 +254,7 @@ class PostureEventModel {
     required this.sessionId,
     required this.occurredAt,
     required this.tiltAngle,
-    required this.durationSec,
+    this.durationSec,
     this.feedbackTriggered = true,
     this.correctedAt,
     this.correctionTimeSec,
@@ -265,11 +265,14 @@ class PostureEventModel {
   final String sessionId;
   final DateTime occurredAt;
   final double tiltAngle;
-  final double durationSec;
+  final double? durationSec;
   final bool feedbackTriggered;
   final DateTime? correctedAt;
   final double? correctionTimeSec;
   final bool synced;
+
+  double get effectiveCorrectionTimeSec =>
+      correctionTimeSec ?? durationSec ?? 0.0;
 
   PostureEventModel copyWith({
     DateTime? occurredAt,
@@ -297,10 +300,10 @@ class PostureEventModel {
         'session_id': sessionId,
         'occurred_at': occurredAt.toIso8601String(),
         'tilt_angle': tiltAngle,
-        'duration_sec': durationSec,
+        'duration_sec': effectiveCorrectionTimeSec,
         'feedback_triggered': feedbackTriggered ? 1 : 0,
         'corrected_at': correctedAt?.toIso8601String(),
-        'correction_time_sec': correctionTimeSec,
+        'correction_time_sec': effectiveCorrectionTimeSec,
         'synced': synced ? 1 : 0,
       };
 
@@ -309,26 +312,28 @@ class PostureEventModel {
         'session_id': ensureUuid(sessionId),
         'occurred_at': occurredAt.toUtc().toIso8601String(),
         'tilt_angle': tiltAngle,
-        'duration_sec': durationSec,
         'feedback_triggered': feedbackTriggered,
         'corrected_at': correctedAt?.toUtc().toIso8601String(),
-        'correction_time_sec': correctionTimeSec,
+        'correction_time_sec': effectiveCorrectionTimeSec,
         'synced': true,
       };
 
-  factory PostureEventModel.fromMap(Map<String, dynamic> map) =>
-      PostureEventModel(
-        id: map['id'] as String,
-        sessionId: map['session_id'] as String,
-        occurredAt: DateTime.parse(map['occurred_at'] as String),
-        tiltAngle: (map['tilt_angle'] as num).toDouble(),
-        durationSec: (map['duration_sec'] as num).toDouble(),
-        feedbackTriggered: map['feedback_triggered'] == 1 ||
-            map['feedback_triggered'] == true,
-        correctedAt: map['corrected_at'] != null
-            ? DateTime.parse(map['corrected_at'] as String)
-            : null,
-        correctionTimeSec: (map['correction_time_sec'] as num?)?.toDouble(),
-        synced: map['synced'] == 1 || map['synced'] == true,
-      );
+  factory PostureEventModel.fromMap(Map<String, dynamic> map) {
+    final corrSec = (map['correction_time_sec'] as num?)?.toDouble() ??
+        (map['duration_sec'] as num?)?.toDouble();
+    return PostureEventModel(
+      id: map['id'] as String,
+      sessionId: map['session_id'] as String,
+      occurredAt: DateTime.parse(map['occurred_at'] as String),
+      tiltAngle: (map['tilt_angle'] as num).toDouble(),
+      durationSec: corrSec,
+      feedbackTriggered: map['feedback_triggered'] == 1 ||
+          map['feedback_triggered'] == true,
+      correctedAt: map['corrected_at'] != null
+          ? DateTime.parse(map['corrected_at'] as String)
+          : null,
+      correctionTimeSec: corrSec,
+      synced: map['synced'] == 1 || map['synced'] == true,
+    );
+  }
 }

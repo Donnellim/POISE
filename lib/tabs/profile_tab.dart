@@ -637,6 +637,7 @@ class _ProfileTabState extends State<ProfileTab> {
       }
       final devices = PoiseBleService.instance.discoveredDevices;
       final connected = await PoiseBleService.instance.restoreConnection() ||
+          await PoiseBleService.instance.checkAndConnectSystemDevice() ||
           (devices.isNotEmpty &&
               await PoiseBleService.instance.connect(devices.first));
       if (!mounted) return;

@@ -165,6 +165,22 @@ class PoiseBleService {
   final _pitchAngleController = StreamController<double>.broadcast();
   Stream<double> get pitchAngleStream => _pitchAngleController.stream;
 
+  final _deviceSessionSecondsController = StreamController<int>.broadcast();
+  Stream<int> get deviceSessionSecondsStream =>
+      _deviceSessionSecondsController.stream;
+
+  int _deviceSessionSeconds = 0;
+  int get deviceSessionSeconds => _deviceSessionSeconds;
+
+  void updateDeviceSessionSeconds(int seconds) {
+    if (seconds >= 0 && seconds != _deviceSessionSeconds) {
+      _deviceSessionSeconds = seconds;
+      if (!_deviceSessionSecondsController.isClosed) {
+        _deviceSessionSecondsController.add(seconds);
+      }
+    }
+  }
+
   // ── Current cached states ──
   PoiseBleState _state = PoiseBleState.disconnected;
   PoiseBleState get state => _state;
@@ -194,6 +210,9 @@ class PoiseBleService {
   List<PoiseDiscoveredDevice> get discoveredDevices =>
       List.unmodifiable(_discoveredDevices);
 
+  @visibleForTesting
+  bool simulateQuickSettingsSynced = false;
+
   /// Check whether the current platform supports BLE hardware.
   Future<bool> isBleSupported() async {
     try {
@@ -221,9 +240,13 @@ class PoiseBleService {
   }
 
   /// Request the OS to turn on the phone's Bluetooth adapter (prompt on Android).
+  ///
+  /// Note: If Bluetooth is already turned on, this returns true immediately
+  /// without triggering the OS prompt.
   Future<bool> requestEnableBluetooth() async {
     try {
       if (allowsSimulation) return true;
+      if (await isBluetoothAdapterOn()) return true;
       await FlutterBluePlus.turnOn();
       final state = await FlutterBluePlus.adapterState
           .where((state) => state != BluetoothAdapterState.unknown)
@@ -233,6 +256,82 @@ class PoiseBleService {
     } catch (_) {
       return false;
     }
+  }
+
+  /// Checks whether a POISE device is currently connected or paired to the OS
+  /// (e.g. via Android Quick Settings panel or iOS Bluetooth Settings),
+  /// and establishes the in-app telemetry connection.
+  Future<bool> checkAndConnectSystemDevice() async {
+    _watchAdapter();
+    if (!await isBluetoothAdapterOn()) return false;
+
+    // Simulation / testing environment support
+    if (allowsSimulation) {
+      final prefs = await SharedPreferences.getInstance();
+      final hasQsSim = simulateQuickSettingsSynced ||
+          (prefs.getBool('poise.quick_settings_connected') ?? false);
+      if (hasQsSim) {
+        return connect(const PoiseDiscoveredDevice(
+          id: 'SIMULATED-POISE-QS',
+          name: PoiseBleConfig.defaultMockDeviceName,
+          rssi: -50,
+        ));
+      }
+      if (simulateForTesting && !hasQsSim) {
+        return isConnected;
+      }
+    }
+
+    try {
+      // 1. Retrieve devices currently connected to the OS
+      List<BluetoothDevice> systemDevs = [];
+      try {
+        systemDevs = await FlutterBluePlus.systemDevices([
+          Guid(PoiseBleConfig.serviceUuid),
+          Guid('00001800-0000-1000-8000-00805f9b34fb'),
+        ]);
+      } catch (e) {
+        debugPrint('[PoiseBleService] systemDevices query error: $e');
+      }
+
+      // 2. Also check bonded devices (paired on Android)
+      List<BluetoothDevice> bondedDevs = [];
+      try {
+        bondedDevs = await FlutterBluePlus.bondedDevices;
+      } catch (_) {}
+
+      final allCandidates = <BluetoothDevice>{...systemDevs, ...bondedDevs};
+      final prefs = await SharedPreferences.getInstance();
+      final savedId = prefs.getString('poise.deviceId');
+
+      for (final dev in allCandidates) {
+        final name = dev.platformName.isNotEmpty
+            ? dev.platformName
+            : (dev.advName.isNotEmpty ? dev.advName : '');
+        final isPoiseName = PoiseBleConfig.deviceNamePrefixes.any(
+          (prefix) => name.toUpperCase().contains(prefix.toUpperCase()),
+        );
+        final isSavedDevice = savedId != null && dev.remoteId.str == savedId;
+
+        if (isPoiseName || isSavedDevice) {
+          debugPrint(
+              '[PoiseBleService] Found system/Quick Settings synced device: $name (${dev.remoteId.str})');
+          final success = await connect(PoiseDiscoveredDevice(
+            id: dev.remoteId.str,
+            name: name.isNotEmpty ? name : 'POISE Device',
+            rssi: 0,
+            rawDevice: dev,
+          ));
+          if (success) {
+            return true;
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('[PoiseBleService] Error inspecting system BLE devices: $e');
+    }
+
+    return isConnected;
   }
 
   /// Stream of phone system Bluetooth adapter states.
@@ -408,58 +507,124 @@ class PoiseBleService {
   }
 
   /// Parses and processes incoming BLE bytes into degrees.
+  /// Parses and processes incoming BLE bytes into degrees.
   /// Supports:
-  /// 1. ASCII String format: e.g. "12.5" or "-3.2\n"
-  /// 2. Binary 32-bit Float (IEEE 754, 4 bytes)
-  /// 3. Binary 16-bit Signed Integer (degrees * 10 or * 100)
+  /// 1. ASCII String format: e.g. "12.5", "12.5,29", "SESSION:29"
+  /// 2. JSON Telemetry format: e.g. {"pitch": 12.5, "elapsed": 29}
+  /// 3. Binary 32-bit Float (IEEE 754, 4 bytes)
+  /// 4. Binary 16-bit Signed Integer (degrees * 10 or * 100)
   void _handleIncomingTelemetry(List<int> bytes) {
     if (bytes.isEmpty || (!isConnected && !_connecting)) return;
 
-    // Check if packet contains LittleFS bulk/stored offline records
+    double? rawAngle;
+
+    // Check if packet contains string/JSON telemetry or offline records
     try {
       final str = utf8.decode(bytes).trim();
-      if (str.startsWith('{') ||
-          str.startsWith('[') ||
+
+      // 1. JSON Telemetry or LittleFS Dump
+      if (str.startsWith('{')) {
+        final dynamic decoded = json.decode(str);
+        if (decoded is Map) {
+          // If it contains a list of events, route to LittleFS batch processor
+          if (decoded.containsKey('events') && decoded['events'] is List) {
+            _processLittleFsPayload(str);
+            return;
+          }
+          final p = (decoded['pitch'] as num?)?.toDouble() ??
+              (decoded['angle'] as num?)?.toDouble() ??
+              (decoded['tilt'] as num?)?.toDouble();
+          if (p != null && p.isFinite) {
+            rawAngle = p;
+          }
+          final el = (decoded['elapsed'] as num?)?.toInt() ??
+              (decoded['session_seconds'] as num?)?.toInt() ??
+              (decoded['seconds'] as num?)?.toInt() ??
+              (decoded['duration'] as num?)?.toInt();
+          if (el != null && el >= 0) {
+            updateDeviceSessionSeconds(el);
+          }
+          if (rawAngle != null) {
+            _applyCalibratedPitch(rawAngle);
+            return;
+          }
+        }
+      } else if (str.startsWith('[') ||
           str.startsWith('LFS:') ||
           str.startsWith('LOG:')) {
         _processLittleFsPayload(str);
         return;
       }
+
+      // 2. ASCII session commands
+      if (str.startsWith('SESSION:') ||
+          str.startsWith('ELAPSED:') ||
+          str.startsWith('UPTIME:')) {
+        final clean =
+            str.replaceFirst(RegExp(r'^(SESSION:|ELAPSED:|UPTIME:)'), '').trim();
+        final s = int.tryParse(clean) ?? double.tryParse(clean)?.toInt();
+        if (s != null) {
+          updateDeviceSessionSeconds(s);
+          return;
+        }
+      }
+
+      // 3. ASCII comma/semicolon format: "12.5,29" -> pitch 12.5, elapsed 29
+      if (str.contains(',') || str.contains(';')) {
+        final parts = str.contains(',') ? str.split(',') : str.split(';');
+        final p = double.tryParse(parts[0].trim());
+        if (p != null) {
+          rawAngle = p;
+          if (parts.length > 1) {
+            final s = int.tryParse(parts[1].trim()) ??
+                double.tryParse(parts[1].trim())?.toInt();
+            if (s != null) {
+              updateDeviceSessionSeconds(s);
+            }
+          }
+        }
+      } else {
+        rawAngle = double.tryParse(str);
+      }
     } catch (_) {}
 
-    double? rawAngle;
-
-    // 1. Try ASCII String decode
-    try {
-      final str = utf8.decode(bytes).trim();
-      rawAngle = double.tryParse(str);
-    } catch (_) {}
-
-    // 2. Try Binary 4-byte Float
+    // 4. Binary 4-byte Float
     if (rawAngle == null && bytes.length >= 4) {
       try {
         final byteData = ByteData.sublistView(Uint8List.fromList(bytes));
         rawAngle = byteData.getFloat32(0, Endian.little);
+        if (bytes.length >= 8) {
+          final el = byteData.getInt32(4, Endian.little);
+          if (el >= 0) updateDeviceSessionSeconds(el);
+        }
       } catch (_) {}
     }
 
-    // 3. Try Binary 2-byte Signed Int (degrees * 10)
+    // 5. Binary 2-byte Signed Int (degrees * 10)
     if (rawAngle == null && bytes.length >= 2) {
       try {
         final byteData = ByteData.sublistView(Uint8List.fromList(bytes));
         final rawInt = byteData.getInt16(0, Endian.little);
         rawAngle = rawInt / 10.0;
+        if (bytes.length >= 4) {
+          final el = byteData.getInt16(2, Endian.little);
+          if (el >= 0) updateDeviceSessionSeconds(el);
+        }
       } catch (_) {}
     }
 
     if (rawAngle != null && rawAngle.isFinite) {
-      _rawPitchAngle = rawAngle;
-      // Calculate effective angle relative to zero baseline calibration
-      final calibratedAngle =
-          (rawAngle - _zeroBaselineOffset).clamp(-60.0, 60.0);
-      _currentPitchAngle = calibratedAngle;
-      _pitchAngleController.add(calibratedAngle);
+      _applyCalibratedPitch(rawAngle);
     }
+  }
+
+  void _applyCalibratedPitch(double rawAngle) {
+    _rawPitchAngle = rawAngle;
+    // Calculate effective angle relative to zero baseline calibration
+    final calibratedAngle =
+        (rawAngle - _zeroBaselineOffset).clamp(-60.0, 60.0);
+    _currentPitchAngle = calibratedAngle;
+    _pitchAngleController.add(calibratedAngle);
   }
 
   /// Parses LittleFS offline posture logs dumped by POISE hardware upon Bluetooth connection
@@ -486,14 +651,23 @@ class PoiseBleService {
                 : [decoded]);
         for (final item in list) {
           if (item is Map) {
-            final pitch = (item['pitch'] as num?)?.toDouble() ?? 0.0;
-            final dur = (item['duration'] as num?)?.toDouble() ?? 1.0;
+            final pitch = (item['pitch'] as num?)?.toDouble() ??
+                (item['angle'] as num?)?.toDouble() ??
+                0.0;
+            final dur = (item['duration'] as num?)?.toDouble() ??
+                (item['elapsed'] as num?)?.toDouble() ??
+                (item['session_seconds'] as num?)?.toDouble() ??
+                1.0;
             final ts = item['timestamp'] != null
                 ? DateTime.fromMillisecondsSinceEpoch(
                     (item['timestamp'] as num).toInt())
                 : now;
             final modeId = (item['mode_id'] as num?)?.toInt() ?? 1;
-            final sessionId = 'lfs_sess_${ts.millisecondsSinceEpoch}';
+            final sessionId = item['session_id'] as String? ??
+                'lfs_sess_${ts.millisecondsSinceEpoch}';
+
+            final isOngoing = item['active'] == true || item['ended'] == false;
+            final sessionEnd = ts.add(Duration(seconds: dur.toInt()));
 
             await PoiseLocalDatabase.instance.insertSession(SessionModel(
               id: sessionId,
@@ -501,9 +675,14 @@ class PoiseBleService {
               userId: userId,
               modeId: modeId,
               startedAt: ts,
-              updatedAt: ts,
+              updatedAt: sessionEnd,
+              endedAt: isOngoing ? null : sessionEnd,
               synced: false,
             ));
+
+            if (isOngoing || item == list.last) {
+              updateDeviceSessionSeconds(dur.toInt());
+            }
 
             events.add(PostureEventModel(
               id: 'lfs_evt_${ts.microsecondsSinceEpoch}_${events.length}',
@@ -527,6 +706,7 @@ class PoiseBleService {
           final ts =
               parts.length > 3 ? (DateTime.tryParse(parts[3]) ?? now) : now;
           final sessionId = 'lfs_sess_${ts.millisecondsSinceEpoch}';
+          final sessionEnd = ts.add(Duration(seconds: dur.toInt()));
 
           await PoiseLocalDatabase.instance.insertSession(SessionModel(
             id: sessionId,
@@ -534,9 +714,12 @@ class PoiseBleService {
             userId: userId,
             modeId: modeId,
             startedAt: ts,
-            updatedAt: ts,
+            updatedAt: sessionEnd,
+            endedAt: sessionEnd,
             synced: false,
           ));
+
+          updateDeviceSessionSeconds(dur.toInt());
 
           events.add(PostureEventModel(
             id: 'lfs_evt_${ts.microsecondsSinceEpoch}',
@@ -667,6 +850,8 @@ class PoiseBleService {
     _rawPitchAngle = 0.0;
     _zeroBaselineOffset = 0.0;
     _currentPitchAngle = 0.0;
+    _deviceSessionSeconds = 0;
+    simulateQuickSettingsSynced = false;
     _state = PoiseBleState.disconnected;
   }
 

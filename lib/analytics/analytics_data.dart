@@ -108,8 +108,6 @@ class AnalyticsSummary {
         'slouched_at',
         'corrected_at',
         'correction_time_seconds',
-        'timestamp_local',
-        'duration_seconds',
         'pitch_degrees',
         'mode',
         'angle_threshold_degrees',
@@ -117,21 +115,24 @@ class AnalyticsSummary {
         'zone',
         'slouch_events',
         'fatigue_warnings',
-        'correction_seconds'
       ],
       for (final r in records)
         [
           sample ? 'sample' : 'measured',
           r.at.toIso8601String(),
-          r.correctedAt?.toIso8601String() ??
-              (r.slouched
-                  ? r.at.add(Duration(seconds: r.seconds)).toIso8601String()
-                  : ''),
-          r.correctionSeconds != null
-              ? r.correctionSeconds!.toStringAsFixed(1)
-              : (r.slouched ? '${r.seconds}.0' : ''),
-          r.at.toIso8601String(),
-          r.seconds,
+          (r.slouched || r.slouchEvents > 0)
+              ? (r.correctedAt?.toIso8601String() ??
+                  r.at
+                      .add(Duration(
+                          milliseconds:
+                              ((r.correctionSeconds ?? (r.seconds > 0 ? r.seconds.toDouble() : 3.0)) * 1000).round()))
+                      .toIso8601String())
+              : '',
+          (r.slouched || r.slouchEvents > 0)
+              ? (r.correctionSeconds != null
+                  ? r.correctionSeconds!.toStringAsFixed(1)
+                  : '${r.seconds > 0 ? r.seconds : 3}.0')
+              : '',
           r.pitch,
           r.mode.label,
           r.mode.angle,
@@ -139,7 +140,6 @@ class AnalyticsSummary {
           r.slouched ? 'slouched' : 'neutral',
           r.slouchEvents,
           r.warnings,
-          r.correctionSeconds ?? ''
         ],
     ];
     final body = rows

@@ -5,10 +5,17 @@ import 'package:flutter_application_1/dashboard_page.dart';
 import 'package:flutter_application_1/tabs/controls_tab.dart';
 import 'package:flutter_application_1/tabs/profile_tab.dart';
 
+import 'package:flutter_application_1/database/local_database.dart';
+
 void main() {
   setUp(() {
     FeedbackPreferences.vibration = true;
     FeedbackPreferences.phoneNotification = false;
+    PoiseLocalDatabase.instance.mockRecordsForTesting = [];
+  });
+
+  tearDown(() {
+    PoiseLocalDatabase.instance.mockRecordsForTesting = null;
   });
 
   testWidgets(

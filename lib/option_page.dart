@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'bluetooth/poise_ble_service.dart';
+import 'calibration_page.dart';
 import 'widgets/gradient_background.dart';
 import 'create_account_page.dart';
 import 'sign_in_page.dart';
@@ -111,10 +113,20 @@ class OptionPage extends StatelessWidget {
 
               // ── Continue as Guest ──
               GestureDetector(
-                onTap: () {
-                  Navigator.of(context).push(MaterialPageRoute<void>(
-                    builder: (_) => const DeviceCheckPage(isGuest: true),
-                  ));
+                onTap: () async {
+                  final ble = PoiseBleService.instance;
+                  if (ble.isConnected ||
+                      await ble.checkAndConnectSystemDevice()) {
+                    if (!context.mounted) return;
+                    Navigator.of(context).push(MaterialPageRoute<void>(
+                      builder: (_) => const CalibrationPage(isGuest: true),
+                    ));
+                  } else {
+                    if (!context.mounted) return;
+                    Navigator.of(context).push(MaterialPageRoute<void>(
+                      builder: (_) => const DeviceCheckPage(isGuest: true),
+                    ));
+                  }
                 },
                 child: const Text(
                   'Continue as guest',
