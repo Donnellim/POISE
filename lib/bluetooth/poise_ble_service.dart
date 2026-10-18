@@ -7,6 +7,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../database/local_database.dart';
 import '../database/models.dart';
+import '../notifications/local_notification_service.dart';
 
 /// Configuration for POISE Bluetooth Low Energy (BLE) communication.
 ///
@@ -24,6 +25,14 @@ class PoiseBleConfig {
   /// GATT Characteristic UUID for zero baseline calibration or tare command (Write).
   static const String calibrationCharacteristicUuid =
       '0000ffe2-0000-1000-8000-00805f9b34fb';
+
+  /// Standard Bluetooth SIG Battery Service UUID (0x180F)
+  static const String batteryServiceUuid =
+      '0000180f-0000-1000-8000-00805f9b34fb';
+
+  /// Standard Bluetooth SIG Battery Level Characteristic UUID (0x2A19)
+  static const String batteryLevelCharacteristicUuid =
+      '00002a19-0000-1000-8000-00805f9b34fb';
 
   /// Advertised name prefixes identifying POISE hardware.
   static const List<String> deviceNamePrefixes = [
@@ -181,6 +190,29 @@ class PoiseBleService {
     }
   }
 
+  final _batteryLevelController = StreamController<int>.broadcast();
+  Stream<int> get batteryLevelStream => _batteryLevelController.stream;
+
+  int _batteryLevel = 100;
+  int get batteryLevel => _batteryLevel;
+
+  void updateBatteryLevel(int level) {
+    final clamped = level.clamp(0, 100);
+    if (clamped != _batteryLevel) {
+      _batteryLevel = clamped;
+      if (!_batteryLevelController.isClosed) {
+        _batteryLevelController.add(clamped);
+      }
+      if (clamped <= 20) {
+        LocalNotificationService.instance.showDeviceNotice(
+          id: 99,
+          title: 'Low Battery',
+          body: 'Please charge your P.O.I.S.E. device ($clamped% remaining).',
+        );
+      }
+    }
+  }
+
   // ── Current cached states ──
   PoiseBleState _state = PoiseBleState.disconnected;
   PoiseBleState get state => _state;
@@ -203,6 +235,7 @@ class PoiseBleService {
   StreamSubscription<List<ScanResult>>? _scanSubscription;
   StreamSubscription<BluetoothConnectionState>? _deviceStateSubscription;
   StreamSubscription<List<int>>? _charValueSubscription;
+  StreamSubscription<List<int>>? _batteryCharSubscription;
   BluetoothCharacteristic? _calibrationChar;
 
   Timer? _mockStreamTimer;
@@ -475,9 +508,20 @@ class PoiseBleService {
     try {
       final services = await device.discoverServices();
       BluetoothCharacteristic? telemetryChar;
+      BluetoothCharacteristic? batteryChar;
 
       for (final service in services) {
+        final sUuid = service.uuid.toString().toLowerCase();
+        final isBatteryService = sUuid.contains('180f');
+
         for (final char in service.characteristics) {
+          final cUuid = char.uuid.toString().toLowerCase();
+          final isBatteryChar = cUuid.contains('2a19');
+
+          if (isBatteryService || isBatteryChar) {
+            batteryChar = char;
+          }
+
           // Check if matches configured telemetry characteristic or has notify property
           if (char.uuid == Guid(PoiseBleConfig.postureCharacteristicUuid) &&
               service.uuid == Guid(PoiseBleConfig.serviceUuid)) {
@@ -489,6 +533,26 @@ class PoiseBleService {
           if (char.uuid == Guid(PoiseBleConfig.calibrationCharacteristicUuid)) {
             _calibrationChar = char;
           }
+        }
+      }
+
+      if (batteryChar != null) {
+        try {
+          if (batteryChar.properties.read) {
+            final val = await batteryChar.read();
+            if (val.isNotEmpty) updateBatteryLevel(val[0]);
+          }
+          if (batteryChar.properties.notify || batteryChar.properties.indicate) {
+            await _batteryCharSubscription?.cancel();
+            _batteryCharSubscription =
+                batteryChar.onValueReceived.listen((data) {
+              if (data.isNotEmpty) updateBatteryLevel(data[0]);
+            });
+            await batteryChar.setNotifyValue(true);
+          }
+        } catch (e) {
+          debugPrint(
+              '[PoiseBleService] Battery characteristic subscription error: $e');
         }
       }
 
@@ -544,6 +608,13 @@ class PoiseBleService {
           if (el != null && el >= 0) {
             updateDeviceSessionSeconds(el);
           }
+          final bat = (decoded['battery'] as num?)?.toInt() ??
+              (decoded['battery_level'] as num?)?.toInt() ??
+              (decoded['bat'] as num?)?.toInt() ??
+              (decoded['bat_pct'] as num?)?.toInt();
+          if (bat != null) {
+            updateBatteryLevel(bat);
+          }
           if (rawAngle != null) {
             _applyCalibratedPitch(rawAngle);
             return;
@@ -556,7 +627,7 @@ class PoiseBleService {
         return;
       }
 
-      // 2. ASCII session commands
+      // 2. ASCII session and battery commands
       if (str.startsWith('SESSION:') ||
           str.startsWith('ELAPSED:') ||
           str.startsWith('UPTIME:')) {
@@ -569,7 +640,19 @@ class PoiseBleService {
         }
       }
 
-      // 3. ASCII comma/semicolon format: "12.5,29" -> pitch 12.5, elapsed 29
+      if (str.startsWith('BAT:') ||
+          str.startsWith('BATTERY:') ||
+          str.startsWith('BATT:')) {
+        final clean =
+            str.replaceFirst(RegExp(r'^(BAT:|BATTERY:|BATT:)'), '').trim();
+        final b = int.tryParse(clean) ?? double.tryParse(clean)?.toInt();
+        if (b != null) {
+          updateBatteryLevel(b);
+          return;
+        }
+      }
+
+      // 3. ASCII comma/semicolon format: "12.5,29" or "12.5,29,85" -> pitch 12.5, elapsed 29, battery 85
       if (str.contains(',') || str.contains(';')) {
         final parts = str.contains(',') ? str.split(',') : str.split(';');
         final p = double.tryParse(parts[0].trim());
@@ -580,6 +663,13 @@ class PoiseBleService {
                 double.tryParse(parts[1].trim())?.toInt();
             if (s != null) {
               updateDeviceSessionSeconds(s);
+            }
+          }
+          if (parts.length > 2) {
+            final b = int.tryParse(parts[2].trim()) ??
+                double.tryParse(parts[2].trim())?.toInt();
+            if (b != null) {
+              updateBatteryLevel(b);
             }
           }
         }
@@ -597,6 +687,10 @@ class PoiseBleService {
           final el = byteData.getInt32(4, Endian.little);
           if (el >= 0) updateDeviceSessionSeconds(el);
         }
+        if (bytes.length >= 12) {
+          final bat = byteData.getInt32(8, Endian.little);
+          if (bat >= 0 && bat <= 100) updateBatteryLevel(bat);
+        }
       } catch (_) {}
     }
 
@@ -609,6 +703,10 @@ class PoiseBleService {
         if (bytes.length >= 4) {
           final el = byteData.getInt16(2, Endian.little);
           if (el >= 0) updateDeviceSessionSeconds(el);
+        }
+        if (bytes.length >= 6) {
+          final bat = byteData.getInt16(4, Endian.little);
+          if (bat >= 0 && bat <= 100) updateBatteryLevel(bat);
         }
       } catch (_) {}
     }
@@ -728,6 +826,8 @@ class PoiseBleService {
             tiltAngle: pitch,
             durationSec: dur,
             feedbackTriggered: pitch.abs() > 15,
+            correctedAt: ts.add(Duration(milliseconds: (dur * 1000).toInt())),
+            correctionTimeSec: dur,
             synced: false,
           ));
         }
@@ -764,6 +864,8 @@ class PoiseBleService {
     _connectedDeviceName = null;
     _charValueSubscription?.cancel();
     _charValueSubscription = null;
+    _batteryCharSubscription?.cancel();
+    _batteryCharSubscription = null;
     _calibrationChar = null;
     _setState(PoiseBleState.disconnected);
   }
@@ -844,6 +946,8 @@ class PoiseBleService {
     _scanSubscription?.cancel();
     _deviceStateSubscription?.cancel();
     _charValueSubscription?.cancel();
+    _batteryCharSubscription?.cancel();
+    _batteryCharSubscription = null;
     _discoveredDevices.clear();
     _activeDevice = null;
     _connectedDeviceName = null;
@@ -851,6 +955,7 @@ class PoiseBleService {
     _zeroBaselineOffset = 0.0;
     _currentPitchAngle = 0.0;
     _deviceSessionSeconds = 0;
+    _batteryLevel = 100;
     simulateQuickSettingsSynced = false;
     _state = PoiseBleState.disconnected;
   }
@@ -864,9 +969,13 @@ class PoiseBleService {
     _scanSubscription?.cancel();
     _deviceStateSubscription?.cancel();
     _charValueSubscription?.cancel();
+    _batteryCharSubscription?.cancel();
+    _batteryCharSubscription = null;
     _connectionStateController.close();
     _isConnectedController.close();
     _scanResultsController.close();
     _pitchAngleController.close();
+    _deviceSessionSecondsController.close();
+    _batteryLevelController.close();
   }
 }

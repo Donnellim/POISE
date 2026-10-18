@@ -353,11 +353,11 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
             const SizedBox(width: 8),
             Expanded(
                 child: _SummaryCard(
-                    icon: Icons.warning,
-                    color: _red,
-                    title: 'Fatigue Warnings Triggered',
-                    value: '${summary.warnings}',
-                    subtitle: 'Total warnings')),
+                    icon: Icons.airline_seat_recline_extra_rounded,
+                    color: const Color(0xFFFF7043),
+                    title: 'Total Posture Events',
+                    value: '${summary.totalSlouchEvents}',
+                    subtitle: 'Total corrected events')),
           ]),
           const SizedBox(height: 10),
           _ChartCard(
@@ -411,7 +411,7 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
                                   ? 'No sensor readings recorded for this period.'
                                   : _preview
                                       ? 'Sample records for the selected period.'
-                                      : 'Telemetry and fatigue events for this period.',
+                                      : 'Telemetry and posture events for this period.',
                               style: const TextStyle(fontSize: 9)),
                         ])),
                     const SizedBox(width: 6),

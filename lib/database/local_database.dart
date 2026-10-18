@@ -163,7 +163,7 @@ class PoiseLocalDatabase {
         corrected_at TEXT,
         correction_time_sec REAL,
         tilt_angle REAL NOT NULL,
-        duration_sec REAL NOT NULL,
+        duration_sec REAL,
         feedback_triggered INTEGER NOT NULL DEFAULT 1,
         synced INTEGER NOT NULL DEFAULT 0,
         FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
@@ -697,7 +697,9 @@ class PoiseLocalDatabase {
 
   bool get _isHeadlessTest =>
       mockRecordsForTesting != null ||
-      (Platform.environment.containsKey('FLUTTER_TEST') && _db == null);
+      (!kIsWeb &&
+          Platform.environment.containsKey('FLUTTER_TEST') &&
+          _db == null);
 
   /// Helper to generate neutral posture intervals split at hourly boundaries
   List<PostureRecord> _createNeutralRecords({
@@ -710,7 +712,8 @@ class PoiseLocalDatabase {
     if (!end.isAfter(start)) return records;
 
     var currentStart = start;
-    while (end.isAfter(currentStart)) {
+    int safetyCounter = 0;
+    while (end.isAfter(currentStart) && safetyCounter++ < 5000) {
       final nextHour = DateTime(
         currentStart.year,
         currentStart.month,
@@ -729,6 +732,9 @@ class PoiseLocalDatabase {
           warnings: 0,
           correctionSeconds: null,
         ));
+      }
+      if (!chunkEnd.isAfter(currentStart)) {
+        break; // Ensure loop always advances
       }
       currentStart = chunkEnd;
     }
@@ -777,6 +783,8 @@ class PoiseLocalDatabase {
             updatedAtRaw != null ? DateTime.tryParse(updatedAtRaw) : null;
         if (updated != null && now.difference(updated).inMinutes > 30) {
           sessionEnd = updated;
+        } else if (now.difference(sessionStart).inHours > 24) {
+          sessionEnd = updated ?? sessionStart.add(const Duration(minutes: 5));
         } else {
           sessionEnd = now;
         }

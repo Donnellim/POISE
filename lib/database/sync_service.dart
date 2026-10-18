@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'local_database.dart';
 import 'models.dart';
+import 'network_service.dart';
 
 enum SyncStatus { idle, syncing, success, error }
 
@@ -17,6 +18,19 @@ class SyncService {
   final ValueNotifier<DateTime?> lastSyncTime = ValueNotifier<DateTime?>(null);
 
   bool get isSyncing => status.value == SyncStatus.syncing;
+  bool get isOnline => NetworkService.instance.isConnected;
+  bool _syncPending = false;
+
+  /// Initializes connectivity listener to auto-sync when internet/mobile data is restored.
+  void initialize() {
+    NetworkService.instance.initialize(
+      onConnectionRestored: () {
+        if (_supabase != null && _supabase!.auth.currentUser != null) {
+          unawaited(syncToCloud());
+        }
+      },
+    );
+  }
 
   SupabaseClient? get _supabase {
     try {
@@ -28,8 +42,16 @@ class SyncService {
   }
 
   /// Pushes un-synced sessions and posture events from local SQFlite to Supabase.
-  /// Only runs when an authenticated Supabase session is active.
+  /// Only runs when an authenticated Supabase session is active and internet is connected.
   Future<bool> syncToCloud() async {
+    final hasInternet = await NetworkService.instance.checkConnectivity();
+    if (!hasInternet) {
+      lastError.value =
+          'No internet connection. Please connect to Wi-Fi or mobile data to sync with the cloud.';
+      status.value = SyncStatus.error;
+      return false;
+    }
+
     final client = _supabase;
     if (client == null) {
       lastError.value =
@@ -38,7 +60,10 @@ class SyncService {
       return false;
     }
 
-    if (isSyncing) return false;
+    if (isSyncing) {
+      _syncPending = true;
+      return true;
+    }
 
     status.value = SyncStatus.syncing;
     lastError.value = null;
@@ -171,7 +196,20 @@ class SyncService {
 
         final eventPayloads =
             unsyncedEvents.map((e) => e.toSupabaseMap()).toList();
-        await client.from('posture_events').upsert(eventPayloads);
+        try {
+          await client.from('posture_events').upsert(eventPayloads);
+        } on PostgrestException catch (e) {
+          if (e.code == '42703' &&
+              (e.message.contains('synced') ||
+                  e.details?.toString().contains('synced') == true)) {
+            for (final p in eventPayloads) {
+              p.remove('synced');
+            }
+            await client.from('posture_events').upsert(eventPayloads);
+          } else {
+            rethrow;
+          }
+        }
         await localDb
             .markPostureEventsSynced(unsyncedEvents.map((e) => e.id).toList());
 
@@ -197,12 +235,27 @@ class SyncService {
       status.value = SyncStatus.error;
       return false;
     } catch (e) {
-      lastError.value = e.toString();
+      final errStr = e.toString();
+      if (errStr.contains('SocketException') ||
+          errStr.contains('Failed host lookup') ||
+          errStr.contains('ClientException') ||
+          errStr.contains('Network is unreachable') ||
+          errStr.contains('Connection refused') ||
+          errStr.contains('HandshakeException')) {
+        lastError.value =
+            'Internet disconnected. Posture data is safely saved locally and will auto-sync once reconnected.';
+      } else {
+        lastError.value = errStr;
+      }
       status.value = SyncStatus.error;
       return false;
     } finally {
       if (status.value == SyncStatus.syncing) {
         status.value = SyncStatus.idle;
+      }
+      if (_syncPending) {
+        _syncPending = false;
+        unawaited(syncToCloud());
       }
     }
   }
@@ -214,6 +267,8 @@ class SyncService {
     final client = _supabase;
     final userId = client?.auth.currentUser?.id;
     if (client == null || userId == null) return false;
+
+    if (!NetworkService.instance.isConnected) return false;
 
     final localDb = PoiseLocalDatabase.instance;
     final isEmpty = await localDb.isDatabaseEmpty();

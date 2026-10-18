@@ -2,48 +2,98 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_application_1/dashboard_page.dart';
 import 'package:flutter_application_1/notifications/notification_center.dart';
+import 'package:flutter_application_1/bluetooth/poise_ble_service.dart';
+import 'package:flutter_application_1/widgets/poise_app_bar.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
-  testWidgets('Bell opens mobile overlay, read and clear persist between tabs',
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+    PoiseBleService.instance.resetForTesting();
+    PoiseBleService.instance.simulateForTesting = true;
+  });
+
+  tearDown(() {
+    PoiseBleService.instance.resetForTesting();
+    PoiseBleService.instance.simulateForTesting = false;
+  });
+
+  testWidgets(
+      'Notification bell is removed from mobile app; notifications registered by system',
       (tester) async {
     tester.view.physicalSize = const Size(360, 800);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
+
     await tester.pumpWidget(const MaterialApp(home: DashboardPage()));
-    await tester.tap(find.byTooltip('Notifications'));
     await tester.pumpAndSettle();
-    expect(find.byType(Dialog), findsOneWidget);
-    expect(find.text('Device Disconnected'), findsOneWidget);
-    await tester.tap(find.byTooltip('Mark all as read'));
-    await tester.pump();
-    expect(
-        tester
-            .widget<IconButton>(find.byWidgetPredicate((widget) =>
-                widget is IconButton && widget.tooltip == 'Mark all as read'))
-            .onPressed,
-        isNull);
-    await tester.tap(find.text('Close'));
-    await tester.pumpAndSettle();
+
+    // Verify notification bell is completely removed from mobile header
+    expect(find.byTooltip('Notifications'), findsNothing);
+    expect(find.byIcon(Icons.notifications_rounded), findsNothing);
+
+    // Switch to Controls tab: no notification bell
     await tester.tap(find.byIcon(Icons.tune_rounded));
     await tester.pumpAndSettle();
-    await tester.tap(find.byTooltip('Notifications'));
+    expect(find.byTooltip('Notifications'), findsNothing);
+
+    // Switch to Analytics tab: no notification bell
+    await tester.tap(find.byIcon(Icons.bar_chart_rounded));
     await tester.pumpAndSettle();
-    expect(
-        tester
-            .widget<IconButton>(find.byWidgetPredicate((widget) =>
-                widget is IconButton && widget.tooltip == 'Mark all as read'))
-            .onPressed,
-        isNull);
-    await tester.tap(find.byTooltip('Clear notifications'));
+    expect(find.byTooltip('Notifications'), findsNothing);
+
+    // Switch to Profile tab: no notification bell
+    await tester.tap(find.byIcon(Icons.person_rounded));
     await tester.pumpAndSettle();
-    expect(find.text('No notifications yet'), findsOneWidget);
-    await tester.tap(find.text('Close'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byTooltip('Notifications'));
-    await tester.pumpAndSettle();
-    expect(find.text('No notifications yet'), findsOneWidget);
+    expect(find.byTooltip('Notifications'), findsNothing);
+
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+      'PoiseHeader monitors POISE device battery accurately when connected',
+      (tester) async {
+    tester.view.physicalSize = const Size(360, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    // 1. Initial connected device with default 100% battery
+    await PoiseBleService.instance.connect(const PoiseDiscoveredDevice(
+      id: 'BATTERY-TEST-DEV',
+      name: 'POISE',
+      rssi: -50,
+    ));
+
+    await tester.pumpWidget(const MaterialApp(
+      home: Scaffold(body: SafeArea(child: PoiseHeader())),
+    ));
+    await tester.pumpAndSettle();
+
+    expect(find.text('100%'), findsOneWidget);
+    expect(find.bySemanticsLabel('POISE device battery: 100 percent'),
+        findsOneWidget);
+
+    // 2. Hardware reports 85% battery
+    PoiseBleService.instance.updateBatteryLevel(85);
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('85%'), findsOneWidget);
+    expect(find.bySemanticsLabel('POISE device battery: 85 percent'),
+        findsOneWidget);
+
+    // 3. Hardware reports 20% low battery
+    PoiseBleService.instance.updateBatteryLevel(20);
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('20%'), findsOneWidget);
+    expect(find.bySemanticsLabel('POISE device battery: 20 percent'),
+        findsOneWidget);
+
+    // 4. Disconnecting device shows disconnected state
+    await PoiseBleService.instance.disconnect();
+    await tester.pumpAndSettle();
+    expect(find.text('--%'), findsOneWidget);
+    expect(find.bySemanticsLabel('POISE device disconnected'), findsOneWidget);
   });
 
   testWidgets('Small screen and large text remain scrollable without overflow',

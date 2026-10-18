@@ -8,6 +8,7 @@ import '../sign_in_page.dart';
 import '../create_account_page.dart';
 import '../option_page.dart';
 import '../bluetooth/poise_ble_service.dart';
+import '../notifications/local_notification_service.dart';
 
 /// Profile tab following the mobile interface v2 design.
 class ProfileTab extends StatefulWidget {
@@ -491,6 +492,9 @@ class _ProfileTabState extends State<ProfileTab> {
 
   void _handleNotificationToggle(bool value) {
     setState(() => _notificationsEnabled = value);
+    if (value) {
+      LocalNotificationService.instance.requestPermission();
+    }
     widget.onNotificationPermissionChanged?.call(value);
     final messenger = ScaffoldMessenger.of(context);
     messenger.clearSnackBars();

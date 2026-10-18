@@ -2,6 +2,23 @@
 
 A new Flutter project.
 
+## Android APK
+
+Build an installable release APK using the saved local Supabase configuration:
+
+```powershell
+flutter build apk --release --dart-define-from-file=config/auth.local.json
+```
+
+The APK is generated at `build/app/outputs/flutter-apk/app-release.apk`.
+Copy it to an Android phone, open it, and allow installation from that source
+if Android prompts you. The launcher name is **P.O.I.S.E.**.
+
+This build currently uses the Android debug signing key for direct testing.
+Configure a dedicated release signing key before publishing to Google Play.
+Keep `config/auth.local.json` out of version control and include only client-safe
+Supabase configuration, never a service-role key.
+
 ## Browser demo login
 
 Run `flutter run -d chrome` without `SUPABASE_URL` and

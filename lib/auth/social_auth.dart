@@ -168,7 +168,7 @@ class SocialAuth implements SocialAuthClient {
   final String _key;
 
   static final instance = SocialAuth();
-  static const mobileRedirect = 'com.poise.app://login-callback/';
+  static const mobileRedirect = 'com.poise.app://login-callback';
   final lastError = ValueNotifier<String?>(null);
   final _incomingSignIns = StreamController<AuthProfile>.broadcast();
   Stream<AuthProfile> get incomingSignIns => _incomingSignIns.stream;
@@ -247,8 +247,9 @@ class SocialAuth implements SocialAuthClient {
           detectSessionInUriPredicate: (uri) =>
               kIsWeb ||
               (uri.scheme == 'com.poise.app' &&
-                  uri.host == 'login-callback' &&
-                  uri.path == '/'),
+                  (uri.host == 'login-callback' ||
+                      uri.path.contains('login-callback') ||
+                      uri.host.isEmpty)),
         ),
       );
       _client = Supabase.instance.client;
@@ -264,7 +265,7 @@ class SocialAuth implements SocialAuthClient {
             redirectTo: kIsWeb ? _webRedirect : mobileRedirect,
             authScreenLaunchMode: kIsWeb
                 ? LaunchMode.platformDefault
-                : LaunchMode.externalApplication,
+                : LaunchMode.inAppBrowserView,
           );
     } catch (_) {
       _launch = null;
