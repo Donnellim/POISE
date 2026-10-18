@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../activity_mode.dart';
+import '../mode_preferences.dart';
 import '../device_session.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
@@ -246,6 +247,25 @@ class PoiseBleService {
   PoiseBleState get state => _state;
   bool get isConnected => _state == PoiseBleState.connected;
 
+  final _modeSyncController = StreamController<bool>.broadcast();
+  Stream<bool> get modeSyncStream => _modeSyncController.stream;
+
+  final _modeStreamController = StreamController<ActivityMode>.broadcast();
+  Stream<ActivityMode> get modeStream => _modeStreamController.stream;
+
+  ActivityMode _phoneSavedMode = ActivityMode.normal;
+  ActivityMode get phoneSavedMode => _phoneSavedMode;
+
+  ActivityMode _hardwareActiveMode = ActivityMode.normal;
+  ActivityMode get hardwareActiveMode => _hardwareActiveMode;
+
+  bool _isModeSynchronized = false;
+  bool get isModeSynchronized =>
+      isConnected && _isModeSynchronized && (_hardwareActiveMode == _phoneSavedMode);
+
+  String? _lastSentModeCommand;
+  String? get lastSentModeCommand => _lastSentModeCommand;
+
   String? _connectedDeviceName;
   String? get connectedDeviceName => _connectedDeviceName;
 
@@ -485,6 +505,7 @@ class PoiseBleService {
       _connectedDeviceName = device.name;
       _setState(PoiseBleState.connected);
       await _rememberDevice(device);
+      await syncSavedModeToHardware();
       _connecting = false;
       return true;
     }
@@ -514,6 +535,7 @@ class PoiseBleService {
 
       _setState(PoiseBleState.connected);
       await _rememberDevice(device);
+      await syncSavedModeToHardware();
       _connecting = false;
       return true;
     } catch (e) {
@@ -954,6 +976,13 @@ class PoiseBleService {
     _batteryCharSubscription?.cancel();
     _batteryCharSubscription = null;
     _calibrationChar = null;
+    // Under Rev 9 firmware, the hardware falls back to Normal on disconnect.
+    // The mobile app retains the phone's last selected preference and does NOT overwrite it.
+    _hardwareActiveMode = ActivityMode.normal;
+    _isModeSynchronized = false;
+    if (!_modeSyncController.isClosed) {
+      _modeSyncController.add(false);
+    }
     _setState(PoiseBleState.disconnected);
   }
 
@@ -995,10 +1024,81 @@ class PoiseBleService {
     return false;
   }
 
+  /// Synchronizes the phone's saved mode preference with the connected POISE hardware.
+  ///
+  /// After BLE connection and service discovery:
+  /// 1. Loads the phone's saved mode preference.
+  /// 2. Sends the corresponding `MODE:<id>` command to FFE2.
+  /// 3. Confirms that the command is applied before marking hardware as synchronized.
+  Future<bool> syncSavedModeToHardware() async {
+    final saved = await ModePreferences.getSavedMode();
+    _phoneSavedMode = saved;
+    if (!_modeStreamController.isClosed) {
+      _modeStreamController.add(saved);
+    }
+
+    if (isConnected && (_calibrationChar != null || allowsSimulation)) {
+      final modeId = ModeModel.idForActivityMode(saved);
+      final cmd = 'MODE:$modeId';
+      _lastSentModeCommand = cmd;
+      bool success = true;
+      if (_calibrationChar != null) {
+        success = await sendSessionCommand(cmd);
+      }
+      if (success) {
+        _hardwareActiveMode = saved;
+        _isModeSynchronized = true;
+        if (!_modeSyncController.isClosed) {
+          _modeSyncController.add(true);
+        }
+        return true;
+      }
+    }
+
+    _hardwareActiveMode = ActivityMode.normal;
+    _isModeSynchronized = false;
+    if (!_modeSyncController.isClosed) {
+      _modeSyncController.add(false);
+    }
+    return false;
+  }
+
   /// Transmits active mode configuration to the connected hardware.
+  ///
+  /// Immediately sends the `MODE:<id>` command, saves the new preference on the phone,
+  /// and confirms application on hardware.
   Future<bool> sendModeCommand(ActivityMode mode) async {
+    _phoneSavedMode = mode;
+    await ModePreferences.saveMode(mode);
+    if (!_modeStreamController.isClosed) {
+      _modeStreamController.add(mode);
+    }
+
     final modeId = ModeModel.idForActivityMode(mode);
-    return sendSessionCommand('MODE:$modeId');
+    final cmd = 'MODE:$modeId';
+    _lastSentModeCommand = cmd;
+
+    if (isConnected && (_calibrationChar != null || allowsSimulation)) {
+      bool success = true;
+      if (_calibrationChar != null) {
+        success = await sendSessionCommand(cmd);
+      }
+      if (success) {
+        _hardwareActiveMode = mode;
+        _isModeSynchronized = true;
+        if (!_modeSyncController.isClosed) {
+          _modeSyncController.add(true);
+        }
+        return true;
+      }
+    }
+
+    _hardwareActiveMode = ActivityMode.normal;
+    _isModeSynchronized = false;
+    if (!_modeSyncController.isClosed) {
+      _modeSyncController.add(false);
+    }
+    return false;
   }
 
   /// Transmits device vibration feedback preference to the connected hardware.
@@ -1068,6 +1168,11 @@ class PoiseBleService {
     _currentPitchAngle = 0.0;
     _deviceSessionSeconds = 0;
     _batteryLevel = 100;
+    _hardwareActiveMode = ActivityMode.normal;
+    _phoneSavedMode = ActivityMode.normal;
+    ModePreferences.resetForTesting();
+    _isModeSynchronized = false;
+    _lastSentModeCommand = null;
     simulateQuickSettingsSynced = false;
     _state = PoiseBleState.disconnected;
   }
@@ -1090,5 +1195,7 @@ class PoiseBleService {
     _deviceSessionSecondsController.close();
     _deviceSessionActionController.close();
     _batteryLevelController.close();
+    _modeSyncController.close();
+    _modeStreamController.close();
   }
 }

@@ -1,6 +1,8 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
+import '../activity_mode.dart';
+
 /// Real-time Spine Tracker Widget
 /// Reflects the client's posture angle in real-time.
 /// Bends the wireframe torso and animates articulated, glowing vertebrae nodes
@@ -8,12 +10,18 @@ import 'package:flutter/material.dart';
 class RealTimeSpineTracker extends StatelessWidget {
   final double pitchAngle; // Degrees (e.g. 18.0)
   final bool isConnected;
+  final ActivityMode activeMode;
+  final bool isSlouchAlert;
+  final bool isSlouchWarning;
   final VoidCallback? onRecalibrateTap;
 
   const RealTimeSpineTracker({
     super.key,
     required this.pitchAngle,
     required this.isConnected,
+    this.activeMode = ActivityMode.normal,
+    this.isSlouchAlert = false,
+    this.isSlouchWarning = false,
     this.onRecalibrateTap,
   });
 
@@ -34,6 +42,9 @@ class RealTimeSpineTracker extends StatelessWidget {
             painter: _SpineTrackerPainter(
               pitchAngle: currentAngle,
               isConnected: isConnected,
+              activeMode: activeMode,
+              isSlouchAlert: isSlouchAlert,
+              isSlouchWarning: isSlouchWarning,
             ),
           ),
 
@@ -70,10 +81,16 @@ class RealTimeSpineTracker extends StatelessWidget {
 class _SpineTrackerPainter extends CustomPainter {
   final double pitchAngle;
   final bool isConnected;
+  final ActivityMode activeMode;
+  final bool isSlouchAlert;
+  final bool isSlouchWarning;
 
   _SpineTrackerPainter({
     required this.pitchAngle,
     required this.isConnected,
+    this.activeMode = ActivityMode.normal,
+    this.isSlouchAlert = false,
+    this.isSlouchWarning = false,
   });
 
   @override
@@ -87,21 +104,22 @@ class _SpineTrackerPainter extends CustomPainter {
     // Calculate angular bending
     final double angleRad = (pitchAngle * math.pi / 180.0) * 0.75;
 
-    // Determine status color based on posture severity
+    // Determine status color based on active mode posture severity
+    final double threshold = activeMode.angle.toDouble();
     Color spineGlowColor;
     Color tensionColor;
     if (!isConnected) {
       spineGlowColor = const Color(0xFF64B5F6).withValues(alpha: 0.4);
       tensionColor = Colors.white54;
-    } else if (pitchAngle.abs() <= 10) {
+    } else if (isSlouchAlert || pitchAngle.abs() > threshold + 8.0) {
+      spineGlowColor = const Color(0xFFFF1744); // Critical Slouch: Neon Red
+      tensionColor = const Color(0xFFFF5252);
+    } else if (isSlouchWarning || pitchAngle.abs() > threshold) {
+      spineGlowColor = const Color(0xFFFFB300); // Forgiveness Buffer: Vibrant Amber
+      tensionColor = const Color(0xFFFFB300);
+    } else {
       spineGlowColor = const Color(0xFF00E676); // Optimal Green
       tensionColor = const Color(0xFF00E5FF);
-    } else if (pitchAngle.abs() <= 25) {
-      spineGlowColor = const Color(0xFF00E5FF); // Moderate Cyan/Blue
-      tensionColor = const Color(0xFF40C4FF);
-    } else {
-      spineGlowColor = const Color(0xFFFF7043); // High strain Orange/Red
-      tensionColor = const Color(0xFFFF5252);
     }
 
     // ── 1. Draw Holographic Silhouette Mesh (Behind Spine) ──
@@ -255,6 +273,9 @@ class _SpineTrackerPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _SpineTrackerPainter oldDelegate) {
     return oldDelegate.pitchAngle != pitchAngle ||
-        oldDelegate.isConnected != isConnected;
+        oldDelegate.isConnected != isConnected ||
+        oldDelegate.activeMode != activeMode ||
+        oldDelegate.isSlouchAlert != isSlouchAlert ||
+        oldDelegate.isSlouchWarning != isSlouchWarning;
   }
 }

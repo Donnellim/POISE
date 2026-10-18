@@ -107,8 +107,9 @@ void main() {
     });
 
     test('Device vibration commands map to VIB:1 and VIB:0', () {
-      expect('VIB:${true ? 1 : 0}', equals('VIB:1'));
-      expect('VIB:${false ? 1 : 0}', equals('VIB:0'));
+      String formatVib(bool enabled) => 'VIB:${enabled ? 1 : 0}';
+      expect(formatVib(true), equals('VIB:1'));
+      expect(formatVib(false), equals('VIB:0'));
     });
 
     test('Phone notification and device vibration preferences operate independently', () {

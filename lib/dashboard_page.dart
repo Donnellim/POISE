@@ -9,6 +9,7 @@ import 'auth/social_auth.dart';
 import 'widgets/guest_account_prompt.dart';
 import 'tabs/dashboard_tab.dart';
 import 'activity_mode.dart';
+import 'mode_preferences.dart';
 import 'tabs/analytics_tab.dart';
 import 'tabs/controls_tab.dart';
 import 'tabs/profile_tab.dart';
@@ -42,6 +43,8 @@ class DashboardPage extends StatefulWidget {
 
 class _DashboardPageState extends State<DashboardPage> {
   StreamSubscription<bool>? _connectionSubscription;
+  StreamSubscription<ActivityMode>? _modeSubscription;
+  StreamSubscription<bool>? _modeSyncSubscription;
   int _currentIndex = 0;
   final _notifications = NotificationCenter.preview();
 
@@ -62,7 +65,28 @@ class _DashboardPageState extends State<DashboardPage> {
         PoiseBleService.instance.isConnectedStream.listen((connected) {
       if (mounted) _handleBluetoothChanged(connected);
     });
+    _modeSubscription = PoiseBleService.instance.modeStream.listen((mode) {
+      if (mounted && _activeMode != mode) {
+        setState(() {
+          _activeMode = mode;
+        });
+      }
+    });
+    _modeSyncSubscription = PoiseBleService.instance.modeSyncStream.listen((_) {
+      if (mounted) setState(() {});
+    });
+
     _activeMode = widget.initialActiveMode;
+    ModePreferences.getSavedMode().then((mode) {
+      if (mounted &&
+          widget.initialActiveMode == ActivityMode.normal &&
+          mode != _activeMode) {
+        setState(() {
+          _activeMode = mode;
+        });
+      }
+    });
+
     _isBluetoothConnected = widget.initialBluetoothConnected;
     _notificationPermissionGranted =
         widget.initialNotificationPermissionGranted;
@@ -95,6 +119,8 @@ class _DashboardPageState extends State<DashboardPage> {
   @override
   void dispose() {
     _connectionSubscription?.cancel();
+    _modeSubscription?.cancel();
+    _modeSyncSubscription?.cancel();
     _notifications.dispose();
     super.dispose();
   }
@@ -176,6 +202,7 @@ class _DashboardPageState extends State<DashboardPage> {
       const AnalyticsTab(),
       ControlsTab(
         selectedMode: activeMode,
+        isBluetoothConnected: _isBluetoothConnected,
         onModeChanged: (mode) {
           setState(() => _activeMode = mode);
           PoiseBleService.instance.sendModeCommand(mode);

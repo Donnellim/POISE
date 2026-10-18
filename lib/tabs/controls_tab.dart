@@ -2,12 +2,14 @@ import 'package:flutter/material.dart';
 
 import '../widgets/poise_app_bar.dart';
 import '../activity_mode.dart';
+import '../bluetooth/poise_ble_service.dart';
 
 class ControlsTab extends StatefulWidget {
   const ControlsTab({
     super.key,
     required this.selectedMode,
     required this.onModeChanged,
+    this.isBluetoothConnected,
     this.vibrationEnabled,
     this.onVibrationChanged,
     this.phoneNotificationEnabled,
@@ -18,6 +20,7 @@ class ControlsTab extends StatefulWidget {
 
   final ActivityMode selectedMode;
   final ValueChanged<ActivityMode> onModeChanged;
+  final bool? isBluetoothConnected;
   final bool? vibrationEnabled;
   final ValueChanged<bool>? onVibrationChanged;
   final bool? phoneNotificationEnabled;
@@ -293,13 +296,43 @@ class _ControlsTabState extends State<ControlsTab> {
                   fontWeight: FontWeight.bold,
                 ),
               ),
-              const SizedBox(height: 2),
-              const Text(
-                'Select the mode based on what you are currently doing.',
-                style: TextStyle(
-                  color: Color(0xFF273E4D),
-                  fontSize: 11.5,
-                ),
+              const SizedBox(height: 3),
+              Builder(
+                builder: (context) {
+                  final isConnected = widget.isBluetoothConnected ??
+                      PoiseBleService.instance.isConnected;
+                  return Row(
+                    key: const ValueKey('mode-sync-status-badge'),
+                    children: [
+                      Icon(
+                        isConnected
+                            ? Icons.cloud_done_rounded
+                            : Icons.cloud_off_rounded,
+                        size: 13,
+                        color: isConnected
+                            ? const Color(0xFF137333)
+                            : const Color(0xFF5F6368),
+                      ),
+                      const SizedBox(width: 4),
+                      Expanded(
+                        child: Text(
+                          isConnected
+                              ? 'Synced with POISE hardware (${widget.selectedMode.label} active)'
+                              : 'Saved on phone: ${widget.selectedMode.label} • Hardware offline (Rev 9 default: Normal)',
+                          style: TextStyle(
+                            color: isConnected
+                                ? const Color(0xFF137333)
+                                : const Color(0xFF273E4D),
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.w600,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  );
+                },
               ),
               const SizedBox(height: 8),
               Row(
