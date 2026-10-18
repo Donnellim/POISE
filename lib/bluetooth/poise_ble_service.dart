@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../activity_mode.dart';
 import '../device_session.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
@@ -83,6 +84,14 @@ enum PoiseBleState {
   scanning,
   connecting,
   connected,
+}
+
+/// Actions or state changes reported by the physical POISE hardware (e.g. gesture triple-click).
+enum PoiseDeviceSessionAction {
+  started,
+  paused,
+  resumed,
+  ended,
 }
 
 /// Central Bluetooth Low Energy (BLE) service for scanning, connecting,
@@ -191,6 +200,11 @@ class PoiseBleService {
   final _deviceSessionSecondsController = StreamController<int>.broadcast();
   Stream<int> get deviceSessionSecondsStream =>
       _deviceSessionSecondsController.stream;
+
+  final _deviceSessionActionController =
+      StreamController<PoiseDeviceSessionAction>.broadcast();
+  Stream<PoiseDeviceSessionAction> get deviceSessionActionStream =>
+      _deviceSessionActionController.stream;
 
   int _deviceSessionSeconds = 0;
   int get deviceSessionSeconds => _deviceSessionSeconds;
@@ -674,6 +688,29 @@ class PoiseBleService {
       }
 
       // 2. ASCII session and battery commands
+      final upper = str.toUpperCase();
+      if (upper == 'SESSION:ENDED' ||
+          upper == 'SESSION:STOPPED' ||
+          upper == 'SESSION:END' ||
+          upper == 'END' ||
+          upper == 'STOP' ||
+          upper == 'TRIPLE_CLICK') {
+        _deviceSessionActionController.add(PoiseDeviceSessionAction.ended);
+        return;
+      }
+      if (upper == 'SESSION:STARTED' || upper == 'START') {
+        _deviceSessionActionController.add(PoiseDeviceSessionAction.started);
+        return;
+      }
+      if (upper == 'SESSION:PAUSED' || upper == 'PAUSE') {
+        _deviceSessionActionController.add(PoiseDeviceSessionAction.paused);
+        return;
+      }
+      if (upper == 'SESSION:RESUMED' || upper == 'RESUME') {
+        _deviceSessionActionController.add(PoiseDeviceSessionAction.resumed);
+        return;
+      }
+
       if (str.startsWith('SESSION:') ||
           str.startsWith('ELAPSED:') ||
           str.startsWith('UPTIME:')) {
@@ -758,15 +795,19 @@ class PoiseBleService {
     }
 
     if (rawAngle != null && rawAngle.isFinite) {
-      _applyCalibratedPitch(rawAngle);
+      // The physical POISE firmware transmits the already-calibrated deviation
+      // relative to its tare zero baseline over FFE1.
+      _applyCalibratedPitch(rawAngle, isHardwareDeviation: true);
     }
   }
 
-  void _applyCalibratedPitch(double rawAngle) {
+  void _applyCalibratedPitch(double rawAngle, {bool isHardwareDeviation = true}) {
     _rawPitchAngle = rawAngle;
-    // Calculate effective angle relative to zero baseline calibration
-    final calibratedAngle =
-        (rawAngle - _zeroBaselineOffset).clamp(-60.0, 60.0);
+    // When received from physical POISE hardware over FFE1, the value is already the calibrated deviation.
+    // If not hardware deviation (e.g. simulated drift before tare), subtract _zeroBaselineOffset.
+    final calibratedAngle = isHardwareDeviation
+        ? rawAngle.clamp(-60.0, 60.0)
+        : (rawAngle - _zeroBaselineOffset).clamp(-60.0, 60.0);
     _currentPitchAngle = calibratedAngle;
     _pitchAngleController.add(calibratedAngle);
   }
@@ -940,6 +981,31 @@ class PoiseBleService {
     }
   }
 
+  /// Sends a session lifecycle command to the connected hardware.
+  Future<bool> sendSessionCommand(String command) async {
+    if (_calibrationChar != null) {
+      try {
+        final bytes = utf8.encode(command);
+        await _calibrationChar!.write(bytes, withoutResponse: false);
+        return true;
+      } catch (e) {
+        debugPrint('[PoiseBleService] Write session command error: $e');
+      }
+    }
+    return false;
+  }
+
+  /// Transmits active mode configuration to the connected hardware.
+  Future<bool> sendModeCommand(ActivityMode mode) async {
+    final modeId = ModeModel.idForActivityMode(mode);
+    return sendSessionCommand('MODE:$modeId');
+  }
+
+  /// Transmits device vibration feedback preference to the connected hardware.
+  Future<bool> sendVibrationCommand(bool enabled) async {
+    return sendSessionCommand('VIB:${enabled ? 1 : 0}');
+  }
+
   void _setState(PoiseBleState newState) {
     _state = newState;
     _connectionStateController.add(newState);
@@ -1022,6 +1088,7 @@ class PoiseBleService {
     _scanResultsController.close();
     _pitchAngleController.close();
     _deviceSessionSecondsController.close();
+    _deviceSessionActionController.close();
     _batteryLevelController.close();
   }
 }

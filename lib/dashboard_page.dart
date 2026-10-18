@@ -145,6 +145,7 @@ class _DashboardPageState extends State<DashboardPage> {
       _vibrationEnabled = enabled;
     });
     FeedbackPreferences.saveVibration(enabled);
+    PoiseBleService.instance.sendVibrationCommand(enabled);
   }
 
   void _handlePhoneNotificationChanged(bool enabled) {
@@ -175,7 +176,10 @@ class _DashboardPageState extends State<DashboardPage> {
       const AnalyticsTab(),
       ControlsTab(
         selectedMode: activeMode,
-        onModeChanged: (mode) => setState(() => _activeMode = mode),
+        onModeChanged: (mode) {
+          setState(() => _activeMode = mode);
+          PoiseBleService.instance.sendModeCommand(mode);
+        },
         vibrationEnabled: _vibrationEnabled,
         onVibrationChanged: _handleVibrationChanged,
         phoneNotificationEnabled: _phoneNotificationEnabled,

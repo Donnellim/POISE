@@ -1,4 +1,6 @@
+import 'dart:math' as math;
 import '../activity_mode.dart';
+import '../database/models.dart';
 
 enum AnalyticsPeriod {
   today('Today'),
@@ -19,15 +21,22 @@ enum AnalyticsPeriod {
 /// One measured interval, split by the producer at date/hour or mode changes.
 /// Only calibrated, connected sensor intervals belong in this collection.
 class PostureRecord {
-  const PostureRecord(
-      {required this.at,
-      required this.seconds,
-      required this.pitch,
-      required this.mode,
-      this.slouchEvents = 0,
-      this.warnings = 0,
-      this.correctionSeconds,
-      this.correctedAt});
+  const PostureRecord({
+    required this.at,
+    required this.seconds,
+    required this.pitch,
+    required this.mode,
+    this.slouchEvents = 0,
+    this.warnings = 0,
+    this.correctionSeconds,
+    this.correctedAt,
+    this.eventId,
+    this.sessionId,
+    this.userId,
+    this.baselineAngle,
+    this.feedbackTriggered,
+  });
+
   final DateTime at;
   final DateTime? correctedAt;
   final int seconds;
@@ -36,6 +45,12 @@ class PostureRecord {
   final int slouchEvents;
   final int warnings;
   final double? correctionSeconds;
+  final String? eventId;
+  final String? sessionId;
+  final String? userId;
+  final double? baselineAngle;
+  final bool? feedbackTriggered;
+
   bool get slouched => pitch.abs() >= mode.angle;
   bool get valid =>
       seconds > 0 &&
@@ -75,6 +90,27 @@ class AnalyticsSummary {
         : values.reduce((a, b) => a + b) / values.length;
   }
 
+  double get averageAbsoluteDeviation {
+    final secs = records.fold(0, (sum, r) => sum + r.seconds);
+    if (secs == 0) return 0.0;
+    return records.fold(0.0, (sum, r) => sum + r.pitch.abs() * r.seconds) / secs;
+  }
+
+  double get maxAbsoluteDeviation {
+    if (records.isEmpty) return 0.0;
+    return records.map((r) => r.pitch.abs()).reduce(math.max);
+  }
+
+  double get timeInZonePercentage {
+    if (totalSeconds == 0) return 100.0;
+    return (neutralSeconds / totalSeconds) * 100.0;
+  }
+
+  double get hourlyEventFrequency {
+    if (totalSeconds == 0) return 0.0;
+    return (totalSlouchEvents / (totalSeconds / 3600.0));
+  }
+
   int get bucketCount => period == AnalyticsPeriod.today ? 12 : 7;
   int bucket(PostureRecord record) => period == AnalyticsPeriod.today
       ? record.at.hour ~/ 2
@@ -106,11 +142,19 @@ class AnalyticsSummary {
     final rows = <List<Object>>[
       [
         'source',
-        'slouched_at',
-        'corrected_at',
-        'correction_time_seconds',
-        'pitch_degrees',
+        'id',
+        'session_id',
+        'user_id',
+        'mode_id',
         'mode',
+        'started_at',
+        'ended_at',
+        'duration_seconds',
+        'baseline_angle',
+        'tilt_angle',
+        'corrected_at',
+        'correction_time_sec',
+        'feedback_triggered',
         'angle_threshold_degrees',
         'time_threshold_seconds',
         'zone',
@@ -119,7 +163,23 @@ class AnalyticsSummary {
       for (final r in records)
         [
           sample ? 'sample' : 'measured',
+          r.eventId ?? (sample ? 'sample_evt' : ''),
+          r.sessionId ?? (sample ? 'sample_sess' : ''),
+          r.userId ?? (sample ? 'sample_user' : 'local_user'),
+          ModeModel.idForActivityMode(r.mode),
+          r.mode.label,
           r.at.toIso8601String(),
+          (r.slouched || r.slouchEvents > 0)
+              ? (r.correctedAt?.toIso8601String() ??
+                  r.at
+                      .add(Duration(
+                          milliseconds:
+                              ((r.correctionSeconds ?? (r.seconds > 0 ? r.seconds.toDouble() : 3.0)) * 1000).round()))
+                      .toIso8601String())
+              : r.at.add(Duration(seconds: r.seconds)).toIso8601String(),
+          r.seconds,
+          r.baselineAngle != null ? r.baselineAngle!.toStringAsFixed(1) : '0.0',
+          r.pitch,
           (r.slouched || r.slouchEvents > 0)
               ? (r.correctedAt?.toIso8601String() ??
                   r.at
@@ -133,8 +193,7 @@ class AnalyticsSummary {
                   ? r.correctionSeconds!.toStringAsFixed(1)
                   : '${r.seconds > 0 ? r.seconds : 3}.0')
               : '',
-          r.pitch,
-          r.mode.label,
+          r.feedbackTriggered ?? (r.slouched || r.slouchEvents > 0),
           r.mode.angle,
           r.mode.seconds,
           r.slouched ? 'slouched' : 'neutral',
