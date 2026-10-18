@@ -62,7 +62,8 @@ class AnalyticsSummary {
   int get slouchedSeconds =>
       records.where((r) => r.slouched).fold(0, (sum, r) => sum + r.seconds);
   int get neutralSeconds => totalSeconds - slouchedSeconds;
-  int get warnings => records.fold(0, (sum, r) => sum + r.warnings);
+  int get totalSlouchEvents => records.fold(0, (sum, r) => sum + r.slouchEvents);
+  int get warnings => totalSlouchEvents;
   double? correctionFor([ActivityMode? mode]) {
     final values = records
         .where((r) =>
@@ -114,7 +115,6 @@ class AnalyticsSummary {
         'time_threshold_seconds',
         'zone',
         'slouch_events',
-        'fatigue_warnings',
       ],
       for (final r in records)
         [
@@ -139,7 +139,6 @@ class AnalyticsSummary {
           r.mode.seconds,
           r.slouched ? 'slouched' : 'neutral',
           r.slouchEvents,
-          r.warnings,
         ],
     ];
     final body = rows
@@ -162,46 +161,182 @@ String wearDuration(int seconds) {
 /// Explicit opt-in preview data; never mixed into measured records.
 List<PostureRecord> sampleRecords(DateTime now) {
   final ref = DateTime(now.year, now.month, now.day, 23, 59, 59);
-  // Realistic hourly telemetry matching the Today Analysis design mockups
-  final todayData = <int, ({int slouch, double pitch, int seconds, int warnings})>{
-    6: (slouch: 5, pitch: 18.6, seconds: 1200, warnings: 1),
-    8: (slouch: 18, pitch: 18.6, seconds: 1800, warnings: 1),
-    10: (slouch: 32, pitch: 16.2, seconds: 2400, warnings: 1),
-    12: (slouch: 54, pitch: 13.8, seconds: 2700, warnings: 1),
-    14: (slouch: 41, pitch: 11.4, seconds: 2400, warnings: 1),
-    16: (slouch: 28, pitch: 9.6, seconds: 2100, warnings: 1),
-    18: (slouch: 22, pitch: 7.8, seconds: 1800, warnings: 1),
-    20: (slouch: 15, pitch: 6.5, seconds: 1500, warnings: 0),
-    22: (slouch: 7, pitch: 5.0, seconds: 900, warnings: 0),
+
+  // Diverse hourly telemetry matching realistic daily posture progression
+  final todayData = <int, ({
+    int slouch,
+    double pitch,
+    int seconds,
+    int warnings,
+    ActivityMode mode,
+    double? correctionSec,
+  })>{
+    6: (
+      slouch: 0,
+      pitch: 7.5,
+      seconds: 1200,
+      warnings: 0,
+      mode: ActivityMode.normal,
+      correctionSec: null,
+    ),
+    8: (
+      slouch: 2,
+      pitch: 19.4,
+      seconds: 1800,
+      warnings: 0,
+      mode: ActivityMode.commuting,
+      correctionSec: 2.1,
+    ),
+    10: (
+      slouch: 6,
+      pitch: 16.8,
+      seconds: 2400,
+      warnings: 1,
+      mode: ActivityMode.focus,
+      correctionSec: 1.9,
+    ),
+    12: (
+      slouch: 11,
+      pitch: 21.6,
+      seconds: 2700,
+      warnings: 2,
+      mode: ActivityMode.normal,
+      correctionSec: 3.8,
+    ),
+    14: (
+      slouch: 7,
+      pitch: 14.5,
+      seconds: 2400,
+      warnings: 1,
+      mode: ActivityMode.focus,
+      correctionSec: 2.3,
+    ),
+    16: (
+      slouch: 3,
+      pitch: 11.2,
+      seconds: 2100,
+      warnings: 0,
+      mode: ActivityMode.normal,
+      correctionSec: 2.8,
+    ),
+    18: (
+      slouch: 2,
+      pitch: 22.5,
+      seconds: 1800,
+      warnings: 0,
+      mode: ActivityMode.commuting,
+      correctionSec: 3.1,
+    ),
+    20: (
+      slouch: 5,
+      pitch: 24.8,
+      seconds: 1500,
+      warnings: 1,
+      mode: ActivityMode.leisure,
+      correctionSec: 4.5,
+    ),
+    22: (
+      slouch: 1,
+      pitch: 13.0,
+      seconds: 900,
+      warnings: 0,
+      mode: ActivityMode.leisure,
+      correctionSec: 2.0,
+    ),
+  };
+
+  // Distinct day-by-day profiles for past 6 days
+  final pastDaysData = <int, List<({
+    int hour,
+    int seconds,
+    double pitch,
+    ActivityMode mode,
+    int slouch,
+    int warnings,
+    double? correctionSec,
+  })>>{
+    // 6 days ago (Intensive Focus & Desk Work)
+    6: [
+      (hour: 8, seconds: 1500, pitch: 18.2, mode: ActivityMode.commuting, slouch: 1, warnings: 0, correctionSec: 2.2),
+      (hour: 11, seconds: 2700, pitch: 15.6, mode: ActivityMode.focus, slouch: 8, warnings: 1, correctionSec: 2.5),
+      (hour: 14, seconds: 2400, pitch: 21.0, mode: ActivityMode.normal, slouch: 12, warnings: 2, correctionSec: 3.9),
+      (hour: 17, seconds: 1800, pitch: 12.0, mode: ActivityMode.normal, slouch: 2, warnings: 0, correctionSec: 2.1),
+      (hour: 20, seconds: 1800, pitch: 24.2, mode: ActivityMode.leisure, slouch: 6, warnings: 1, correctionSec: 4.8),
+    ],
+    // 5 days ago (Light Study & Leisure)
+    5: [
+      (hour: 9, seconds: 2100, pitch: 12.5, mode: ActivityMode.focus, slouch: 4, warnings: 0, correctionSec: 1.8),
+      (hour: 13, seconds: 1800, pitch: 10.4, mode: ActivityMode.normal, slouch: 1, warnings: 0, correctionSec: 1.6),
+      (hour: 16, seconds: 2400, pitch: 19.5, mode: ActivityMode.leisure, slouch: 2, warnings: 0, correctionSec: 3.2),
+      (hour: 19, seconds: 1500, pitch: 22.8, mode: ActivityMode.leisure, slouch: 5, warnings: 1, correctionSec: 4.1),
+    ],
+    // 4 days ago (Heavy Technical Sprint)
+    4: [
+      (hour: 8, seconds: 1800, pitch: 21.5, mode: ActivityMode.commuting, slouch: 2, warnings: 0, correctionSec: 2.8),
+      (hour: 10, seconds: 3000, pitch: 17.8, mode: ActivityMode.focus, slouch: 9, warnings: 1, correctionSec: 2.0),
+      (hour: 13, seconds: 2700, pitch: 23.5, mode: ActivityMode.normal, slouch: 14, warnings: 2, correctionSec: 4.4),
+      (hour: 15, seconds: 2100, pitch: 14.8, mode: ActivityMode.focus, slouch: 6, warnings: 0, correctionSec: 2.2),
+      (hour: 18, seconds: 1500, pitch: 17.0, mode: ActivityMode.commuting, slouch: 0, warnings: 0, correctionSec: null),
+      (hour: 21, seconds: 1800, pitch: 25.0, mode: ActivityMode.leisure, slouch: 7, warnings: 1, correctionSec: 5.2),
+    ],
+    // 3 days ago (High Posture Discipline)
+    3: [
+      (hour: 9, seconds: 2400, pitch: 9.8, mode: ActivityMode.focus, slouch: 1, warnings: 0, correctionSec: 1.3),
+      (hour: 11, seconds: 2700, pitch: 11.2, mode: ActivityMode.focus, slouch: 2, warnings: 0, correctionSec: 1.5),
+      (hour: 14, seconds: 2100, pitch: 13.8, mode: ActivityMode.normal, slouch: 2, warnings: 0, correctionSec: 2.0),
+      (hour: 17, seconds: 1800, pitch: 11.0, mode: ActivityMode.normal, slouch: 0, warnings: 0, correctionSec: null),
+      (hour: 20, seconds: 1500, pitch: 18.0, mode: ActivityMode.leisure, slouch: 1, warnings: 0, correctionSec: 2.4),
+    ],
+    // 2 days ago (Commuting & Mobile Work)
+    2: [
+      (hour: 8, seconds: 1800, pitch: 23.0, mode: ActivityMode.commuting, slouch: 1, warnings: 0, correctionSec: 2.6),
+      (hour: 11, seconds: 2400, pitch: 19.4, mode: ActivityMode.normal, slouch: 7, warnings: 1, correctionSec: 3.4),
+      (hour: 15, seconds: 2100, pitch: 16.0, mode: ActivityMode.focus, slouch: 5, warnings: 0, correctionSec: 2.1),
+      (hour: 18, seconds: 1500, pitch: 20.8, mode: ActivityMode.commuting, slouch: 2, warnings: 0, correctionSec: 3.0),
+      (hour: 21, seconds: 1800, pitch: 22.0, mode: ActivityMode.leisure, slouch: 4, warnings: 0, correctionSec: 3.6),
+    ],
+    // 1 day ago (Yesterday: Afternoon Slouch Trends)
+    1: [
+      (hour: 9, seconds: 2400, pitch: 10.5, mode: ActivityMode.focus, slouch: 2, warnings: 0, correctionSec: 1.7),
+      (hour: 11, seconds: 2700, pitch: 13.8, mode: ActivityMode.focus, slouch: 5, warnings: 0, correctionSec: 2.3),
+      (hour: 14, seconds: 2400, pitch: 17.5, mode: ActivityMode.normal, slouch: 8, warnings: 1, correctionSec: 3.2),
+      (hour: 16, seconds: 2100, pitch: 22.2, mode: ActivityMode.normal, slouch: 11, warnings: 2, correctionSec: 4.0),
+      (hour: 19, seconds: 1800, pitch: 23.8, mode: ActivityMode.leisure, slouch: 6, warnings: 1, correctionSec: 4.6),
+    ],
   };
 
   return [
     // Days 6 down to 1 (for 7-day history)
-    for (var day = 6; day >= 1; day--)
-      for (var hour = 6; hour <= 22; hour += 2)
+    for (final dayEntry in pastDaysData.entries)
+      for (final rec in dayEntry.value)
         PostureRecord(
-          at: DateTime(ref.year, ref.month, ref.day - day, hour),
-          seconds: 900 + (hour % 3) * 300,
-          pitch: (hour % 4 == 0 ? 22.0 : 6.0) + day * 0.5,
-          mode: ActivityMode
-              .values[(hour ~/ 2 + day) % ActivityMode.values.length],
-          slouchEvents: hour % 4 == 0 ? 2 + day : (hour % 3 == 0 ? 1 : 0),
-          warnings: hour % 4 == 0 ? 1 : 0,
-          correctionSeconds:
-              hour % 4 == 0 ? 2.5 + day * 0.3 + hour / 20 : null,
+          at: DateTime(ref.year, ref.month, ref.day - dayEntry.key, rec.hour),
+          seconds: rec.seconds,
+          pitch: rec.pitch,
+          mode: rec.mode,
+          slouchEvents: rec.slouch,
+          warnings: rec.warnings,
+          correctionSeconds: rec.correctionSec,
+          correctedAt: (rec.correctionSec != null && rec.slouch > 0)
+              ? DateTime(ref.year, ref.month, ref.day - dayEntry.key, rec.hour)
+                  .add(Duration(milliseconds: (rec.correctionSec! * 1000).round()))
+              : null,
         ),
 
-    // Day 0 (Today - guaranteed sample preview data regardless of time of day)
+    // Day 0 (Today - guaranteed sample preview data regardless of current hour)
     for (final entry in todayData.entries)
       PostureRecord(
         at: DateTime(ref.year, ref.month, ref.day, entry.key),
         seconds: entry.value.seconds,
         pitch: entry.value.pitch,
-        mode: ActivityMode
-            .values[(entry.key ~/ 2) % ActivityMode.values.length],
+        mode: entry.value.mode,
         slouchEvents: entry.value.slouch,
         warnings: entry.value.warnings,
-        correctionSeconds: 3.2,
+        correctionSeconds: entry.value.correctionSec,
+        correctedAt: (entry.value.correctionSec != null && entry.value.slouch > 0)
+            ? DateTime(ref.year, ref.month, ref.day, entry.key)
+                .add(Duration(milliseconds: (entry.value.correctionSec! * 1000).round()))
+            : null,
       ),
   ];
 }

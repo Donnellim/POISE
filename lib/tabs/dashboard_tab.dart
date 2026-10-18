@@ -8,6 +8,7 @@ import '../notifications/notification_center.dart';
 import '../database/local_database.dart';
 import '../database/models.dart';
 import '../database/sync_service.dart';
+import '../database/network_service.dart';
 import '../auth/social_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -49,7 +50,7 @@ class _DashboardTabState extends State<DashboardTab> {
 
   // ── 4. Slouch Correction Tracking ──
   DateTime? _activeSlouchStartTime;
-  String? _activeSlouchEventId;
+  double _peakSlouchAngle = 0.0;
 
   // ── 5. Session Elapsed Timer ──
   bool _isSessionRunning = true;
@@ -58,6 +59,8 @@ class _DashboardTabState extends State<DashboardTab> {
   bool _calibrationDialogOpen = false;
   StreamSubscription<double>? _blePitchSub;
   StreamSubscription<int>? _bleDeviceSessionSub;
+  StreamSubscription<int>? _bleBatterySub;
+  int _batteryLevel = 100;
   DateTime? _lastAlertNotificationTime;
   String? _currentSessionId;
 
@@ -130,7 +133,9 @@ class _DashboardTabState extends State<DashboardTab> {
         ),
       );
 
-      if (_isCloudSynced && user != null) {
+      if (_isCloudSynced &&
+          user != null &&
+          NetworkService.instance.isConnected) {
         unawaited(SyncService.instance.syncToCloud());
       }
     } catch (_) {}
@@ -152,7 +157,7 @@ class _DashboardTabState extends State<DashboardTab> {
       _sessionSeconds = 0;
       _pitchAngle = 0.0;
       _activeSlouchStartTime = null;
-      _activeSlouchEventId = null;
+      _peakSlouchAngle = 0.0;
     });
 
     await _ensureActiveSessionStarted(baselineAngle: currentRaw);
@@ -173,17 +178,31 @@ class _DashboardTabState extends State<DashboardTab> {
 
   Future<void> _endCurrentSession() async {
     // If user was slouching when session ended, finalize the posture event
-    if (_activeSlouchStartTime != null && _activeSlouchEventId != null) {
+    if (_activeSlouchStartTime != null) {
       final now = DateTime.now();
       final correctionTime =
           now.difference(_activeSlouchStartTime!).inMilliseconds / 1000.0;
-      await PoiseLocalDatabase.instance.updatePostureEventCorrection(
-        id: _activeSlouchEventId!,
-        correctedAt: now,
-        correctionTimeSec: correctionTime,
-      );
+      final occurredAt = _activeSlouchStartTime!;
+      final peakAngle = _peakSlouchAngle;
       _activeSlouchStartTime = null;
-      _activeSlouchEventId = null;
+      _peakSlouchAngle = 0.0;
+
+      if (_currentSessionId != null) {
+        final eventId = ensureUuid('evt_${occurredAt.microsecondsSinceEpoch}');
+        await PoiseLocalDatabase.instance.insertPostureEvent(
+          PostureEventModel(
+            id: eventId,
+            sessionId: _currentSessionId!,
+            occurredAt: occurredAt,
+            tiltAngle: peakAngle,
+            durationSec: correctionTime,
+            feedbackTriggered: true,
+            correctedAt: now,
+            correctionTimeSec: correctionTime,
+            synced: false,
+          ),
+        );
+      }
     }
 
     _closeCurrentSession();
@@ -218,49 +237,6 @@ class _DashboardTabState extends State<DashboardTab> {
     }
   }
 
-  Future<void> _recordPeriodicPostureCheck() async {
-    if (!_canMonitor) return;
-    await _ensureActiveSessionStarted();
-    if (_currentSessionId == null) return;
-
-    try {
-      final now = DateTime.now();
-      final user = SocialAuth.instance.user;
-      final userId = user?.id ?? 'local_user';
-      final prefs = await SharedPreferences.getInstance();
-      final deviceId = prefs.getString('poise.deviceId') ?? 'POISE-DEVICE';
-
-      await PoiseLocalDatabase.instance.insertPostureEvent(
-        PostureEventModel(
-          id: 'evt_${now.microsecondsSinceEpoch}',
-          sessionId: _currentSessionId!,
-          occurredAt: now,
-          tiltAngle: _pitchAngle,
-          durationSec: 1.0,
-          feedbackTriggered: _pitchAngle.abs() > widget.activeMode.angle,
-          synced: false,
-        ),
-      );
-
-      await PoiseLocalDatabase.instance.insertSession(
-        SessionModel(
-          id: _currentSessionId!,
-          deviceId: deviceId,
-          userId: userId,
-          modeId: ModeModel.idForActivityMode(widget.activeMode),
-          startedAt: now.subtract(Duration(seconds: _sessionSeconds)),
-          updatedAt: now,
-          baselineAngle: _sessionBaselineAngle,
-          synced: false,
-        ),
-      );
-
-      if (_isCloudSynced && user != null) {
-        unawaited(SyncService.instance.syncToCloud());
-      }
-    } catch (_) {}
-  }
-
   Future<void> _flushRealtimePostureData() async {
     try {
       final user = SocialAuth.instance.user;
@@ -280,36 +256,52 @@ class _DashboardTabState extends State<DashboardTab> {
           modeId: modeId,
           startedAt: now.subtract(Duration(seconds: _sessionSeconds)),
           updatedAt: now,
-          synced: false,
-        ),
-      );
-
-      await PoiseLocalDatabase.instance.insertPostureEvent(
-        PostureEventModel(
-          id: 'evt_${now.microsecondsSinceEpoch}',
-          sessionId: _currentSessionId!,
-          occurredAt: now,
-          tiltAngle: _pitchAngle,
-          durationSec: 0,
-          feedbackTriggered: _pitchAngle.abs() > widget.activeMode.angle,
+          baselineAngle: _sessionBaselineAngle,
           synced: false,
         ),
       );
     } catch (_) {}
   }
 
-
-
   bool get _shouldTrackDatabaseSession =>
       !PoiseBleService.instance.isTesting;
 
   void _closeCurrentSession() {
+    if (_activeSlouchStartTime != null) {
+      final now = DateTime.now();
+      final correctionTime =
+          now.difference(_activeSlouchStartTime!).inMilliseconds / 1000.0;
+      final occurredAt = _activeSlouchStartTime!;
+      final peakAngle = _peakSlouchAngle;
+      _activeSlouchStartTime = null;
+      _peakSlouchAngle = 0.0;
+
+      if (_currentSessionId != null) {
+        final eventId = ensureUuid('evt_${occurredAt.microsecondsSinceEpoch}');
+        unawaited(PoiseLocalDatabase.instance.insertPostureEvent(
+          PostureEventModel(
+            id: eventId,
+            sessionId: _currentSessionId!,
+            occurredAt: occurredAt,
+            tiltAngle: peakAngle,
+            durationSec: correctionTime,
+            feedbackTriggered: true,
+            correctedAt: now,
+            correctionTimeSec: correctionTime,
+            synced: false,
+          ),
+        ));
+      }
+    }
+
     if (_currentSessionId != null) {
       final sId = _currentSessionId!;
       _currentSessionId = null;
       if (_shouldTrackDatabaseSession) {
         unawaited(PoiseLocalDatabase.instance.endSession(sId, DateTime.now()));
-        if (_isCloudSynced && SocialAuth.instance.user != null) {
+        if (_isCloudSynced &&
+            SocialAuth.instance.user != null &&
+            NetworkService.instance.isConnected) {
           unawaited(SyncService.instance.syncToCloud());
         }
       }
@@ -321,6 +313,9 @@ class _DashboardTabState extends State<DashboardTab> {
   @override
   void initState() {
     super.initState();
+    NetworkService.instance.isConnectedNotifier
+        .addListener(_onNetworkStatusChanged);
+    SyncService.instance.status.addListener(_onSyncStatusChanged);
     unawaited(SyncService.instance.restoreFromCloud());
     _pitchAngle = PoiseBleService.instance.currentPitchAngle;
     _sessionBaselineAngle = PoiseBleService.instance.zeroBaselineOffset;
@@ -332,6 +327,15 @@ class _DashboardTabState extends State<DashboardTab> {
     }
     _startTimer();
     _syncActiveSessionWithDeviceAndDatabase();
+
+    _batteryLevel = PoiseBleService.instance.batteryLevel;
+    _bleBatterySub = PoiseBleService.instance.batteryLevelStream.listen((bat) {
+      if (mounted) {
+        setState(() {
+          _batteryLevel = bat;
+        });
+      }
+    });
 
     _bleDeviceSessionSub =
         PoiseBleService.instance.deviceSessionSecondsStream.listen((sec) {
@@ -362,8 +366,9 @@ class _DashboardTabState extends State<DashboardTab> {
 
             if (isSlouched) {
               if (_activeSlouchStartTime == null) {
+                // Posture deviation detected: start tracking duration and peak angle
                 _activeSlouchStartTime = now;
-                _activeSlouchEventId = 'evt_${now.microsecondsSinceEpoch}';
+                _peakSlouchAngle = angle;
 
                 if (_lastAlertNotificationTime == null ||
                     now.difference(_lastAlertNotificationTime!) >
@@ -376,39 +381,52 @@ class _DashboardTabState extends State<DashboardTab> {
                   _currentSessionId = 'sess_${now.millisecondsSinceEpoch}';
                   _ensureActiveSessionStarted();
                 }
-                final sId = _currentSessionId!;
-                unawaited(PoiseLocalDatabase.instance.insertPostureEvent(
-                  PostureEventModel(
-                    id: _activeSlouchEventId!,
-                    sessionId: sId,
-                    occurredAt: now,
-                    tiltAngle: angle,
-                    durationSec: 0.0,
-                    feedbackTriggered: true,
-                    synced: false,
-                  ),
-                ));
+              } else {
+                // Slouch is continuing: track the peak slouch angle
+                if (angle.abs() > _peakSlouchAngle.abs()) {
+                  _peakSlouchAngle = angle;
+                }
               }
             } else {
-              if (_activeSlouchStartTime != null &&
-                  _activeSlouchEventId != null) {
+              // User corrected posture! 1 posture event = improper posture detected -> corrected.
+              if (_activeSlouchStartTime != null) {
                 final correctedAt = now;
                 final correctionTime = correctedAt
                         .difference(_activeSlouchStartTime!)
                         .inMilliseconds /
                     1000.0;
-                final eventId = _activeSlouchEventId!;
+                final occurredAt = _activeSlouchStartTime!;
+                final peakAngle = _peakSlouchAngle;
                 _activeSlouchStartTime = null;
-                _activeSlouchEventId = null;
+                _peakSlouchAngle = 0.0;
 
-                unawaited(PoiseLocalDatabase.instance
-                    .updatePostureEventCorrection(
-                  id: eventId,
-                  correctedAt: correctedAt,
-                  correctionTimeSec: correctionTime,
+                if (_currentSessionId == null) {
+                  _currentSessionId = 'sess_${now.millisecondsSinceEpoch}';
+                  _ensureActiveSessionStarted();
+                }
+                final sId = _currentSessionId!;
+                final eventId =
+                    ensureUuid('evt_${occurredAt.microsecondsSinceEpoch}');
+
+                // Insert the single complete posture event
+                unawaited(PoiseLocalDatabase.instance.insertPostureEvent(
+                  PostureEventModel(
+                    id: eventId,
+                    sessionId: sId,
+                    occurredAt: occurredAt,
+                    tiltAngle: peakAngle,
+                    durationSec: correctionTime,
+                    feedbackTriggered: true,
+                    correctedAt: correctedAt,
+                    correctionTimeSec: correctionTime,
+                    synced: false,
+                  ),
                 ));
 
-                if (_isCloudSynced && SocialAuth.instance.user != null) {
+                // Real-time cloud sync: immediately sync the completed event
+                if (_isCloudSynced &&
+                    SocialAuth.instance.user != null &&
+                    NetworkService.instance.isConnected) {
                   unawaited(SyncService.instance.syncToCloud());
                 }
               }
@@ -473,19 +491,35 @@ class _DashboardTabState extends State<DashboardTab> {
                 DateTime.now(),
               ));
             }
-            if (_sessionSeconds % 30 == 0) {
-              _recordPeriodicPostureCheck();
-            }
           }
         }
       }
     });
   }
 
+  void _onNetworkStatusChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _onSyncStatusChanged() {
+    if (mounted) {
+      setState(() {
+        _isSyncing = SyncService.instance.isSyncing;
+        if (SyncService.instance.status.value == SyncStatus.success) {
+          _isCloudSynced = true;
+        }
+      });
+    }
+  }
+
   @override
   void dispose() {
+    NetworkService.instance.isConnectedNotifier
+        .removeListener(_onNetworkStatusChanged);
+    SyncService.instance.status.removeListener(_onSyncStatusChanged);
     _blePitchSub?.cancel();
     _bleDeviceSessionSub?.cancel();
+    _bleBatterySub?.cancel();
     _sessionTimer?.cancel();
     super.dispose();
   }
@@ -544,8 +578,8 @@ class _DashboardTabState extends State<DashboardTab> {
                   Expanded(
                       child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
-                    children: const [
-                      Text(
+                    children: [
+                      const Text(
                         'P.O.I.S.E. Device Connected',
                         style: TextStyle(
                             color: Colors.black87,
@@ -553,8 +587,8 @@ class _DashboardTabState extends State<DashboardTab> {
                             fontWeight: FontWeight.bold),
                       ),
                       Text(
-                        'POISE Device • Battery: 100%',
-                        style: TextStyle(color: Colors.black54, fontSize: 12.5),
+                        'POISE Device • Battery: $_batteryLevel%',
+                        style: const TextStyle(color: Colors.black54, fontSize: 12.5),
                       ),
                     ],
                   )),
@@ -681,25 +715,31 @@ class _DashboardTabState extends State<DashboardTab> {
                   Container(
                     padding: const EdgeInsets.all(10),
                     decoration: BoxDecoration(
-                      color: (isGuest
-                              ? Colors.grey
-                              : (_isCloudSynced
-                                  ? const Color(0xFF0288D1)
-                                  : Colors.orange))
+                      color: (!NetworkService.instance.isConnected
+                              ? Colors.orange
+                              : (isGuest
+                                  ? Colors.grey
+                                  : (_isCloudSynced
+                                      ? const Color(0xFF0288D1)
+                                      : Colors.orange)))
                           .withValues(alpha: 0.15),
                       shape: BoxShape.circle,
                     ),
                     child: Icon(
-                      isGuest
-                          ? Icons.person_off_rounded
-                          : (_isCloudSynced
-                              ? Icons.cloud_done_rounded
-                              : Icons.cloud_off_rounded),
-                      color: isGuest
-                          ? Colors.grey[700]
-                          : (_isCloudSynced
-                              ? const Color(0xFF0288D1)
-                              : Colors.orange[800]),
+                      !NetworkService.instance.isConnected
+                          ? Icons.cloud_off_rounded
+                          : (isGuest
+                              ? Icons.person_off_rounded
+                              : (_isCloudSynced
+                                  ? Icons.cloud_done_rounded
+                                  : Icons.sync_rounded)),
+                      color: !NetworkService.instance.isConnected
+                          ? Colors.orange[800]
+                          : (isGuest
+                              ? Colors.grey[700]
+                              : (_isCloudSynced
+                                  ? const Color(0xFF0288D1)
+                                  : Colors.orange[800])),
                       size: 26,
                     ),
                   ),
@@ -709,22 +749,26 @@ class _DashboardTabState extends State<DashboardTab> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        isGuest
-                            ? 'Cloud Sync: Guest Mode'
-                            : (_isCloudSynced
-                                ? 'Cloud Sync: Active'
-                                : 'Cloud Sync: Offline'),
+                        !NetworkService.instance.isConnected
+                            ? 'Cloud Sync: Offline'
+                            : (isGuest
+                                ? 'Cloud Sync: Guest Mode'
+                                : (_isCloudSynced
+                                    ? 'Cloud Sync: Active'
+                                    : 'Cloud Sync: Pending')),
                         style: const TextStyle(
                             color: Colors.black87,
                             fontSize: 16,
                             fontWeight: FontWeight.bold),
                       ),
                       Text(
-                        isGuest
-                            ? 'Signed in as Guest. Cloud sync is only available for accounts. Go to Profile tab to sign in.'
-                            : (_isCloudSynced
-                                ? 'Connected as ${user.email ?? 'User'} • Auto-backup enabled'
-                                : 'Sync paused • Local telemetry only'),
+                        !NetworkService.instance.isConnected
+                            ? 'No internet connection • Mobile data and Wi-Fi are disconnected. Telemetry is saved locally and will auto-sync when reconnected.'
+                            : (isGuest
+                                ? 'Signed in as Guest. Cloud sync is only available for accounts. Go to Profile tab to sign in.'
+                                : (_isCloudSynced
+                                    ? 'Connected as ${user.email ?? 'User'} • Auto-backup enabled'
+                                    : 'Online • Unsynced records ready to backup to cloud')),
                         style: const TextStyle(
                             color: Colors.black54, fontSize: 12.5),
                       ),
@@ -738,6 +782,34 @@ class _DashboardTabState extends State<DashboardTab> {
                 height: 48,
                 child: ElevatedButton.icon(
                   onPressed: () async {
+                    if (!NetworkService.instance.isConnected) {
+                      Navigator.pop(context);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          backgroundColor: const Color(0xFFE53935),
+                          behavior: SnackBarBehavior.floating,
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12)),
+                          content: const Row(
+                            children: [
+                              Icon(Icons.cloud_off_rounded,
+                                  color: Colors.white),
+                              SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  'Cannot sync while offline. Please connect to Wi-Fi or mobile data.',
+                                  style: TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w600),
+                                ),
+                              ),
+                            ],
+                          ),
+                          duration: const Duration(seconds: 4),
+                        ),
+                      );
+                      return;
+                    }
                     setModalState(() => _isSyncing = true);
                     setState(() => _isSyncing = true);
                     await _flushRealtimePostureData();
@@ -927,21 +999,8 @@ class _DashboardTabState extends State<DashboardTab> {
   Future<void> _generateDemoTelemetryAndSync() async {
     try {
       final user = SocialAuth.instance.user;
-      if (user == null) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            backgroundColor: Color(0xFFE53935),
-            behavior: SnackBarBehavior.floating,
-            content: Text(
-              'You are in Guest mode. Please sign in or register in the Profile tab before syncing data to Supabase Cloud.',
-            ),
-          ),
-        );
-        return;
-      }
-
-      final userId = user.id;
+      final isGuest = user == null;
+      final userId = user?.id ?? 'local_user';
       final now = DateTime.now();
 
       // 1. Ensure test device exists
@@ -951,46 +1010,149 @@ class _DashboardTabState extends State<DashboardTab> {
           id: testDeviceId,
           userId: userId,
           deviceName: 'POISE Device',
-          pairedAt: now.subtract(const Duration(hours: 1)),
+          pairedAt: now.subtract(const Duration(hours: 3)),
           lastSeenAt: now,
           updatedAt: now,
         ),
       );
 
-      // 2. Insert a realistic test session with valid UUID
-      final testSessionId = ensureUuid('sess_demo_${now.millisecondsSinceEpoch}');
+      // 2. Insert two realistic sessions with clean baseline angles
+      final session1Id =
+          ensureUuid('sess_demo_focus_${now.millisecondsSinceEpoch}');
       await PoiseLocalDatabase.instance.insertSession(
         SessionModel(
-          id: testSessionId,
+          id: session1Id,
           deviceId: testDeviceId,
           userId: userId,
-          modeId: ModeModel.idForActivityMode(widget.activeMode),
-          startedAt: now.subtract(const Duration(minutes: 30)),
-          endedAt: now,
-          updatedAt: now,
+          modeId: ModeModel.idForActivityMode(ActivityMode.focus),
+          startedAt: now.subtract(const Duration(minutes: 90)),
+          endedAt: now.subtract(const Duration(minutes: 45)),
+          updatedAt: now.subtract(const Duration(minutes: 45)),
+          baselineAngle: 12.0,
           synced: false,
         ),
       );
 
-      // 3. Insert realistic test posture events
-      final testAngles = [18.5, 21.0, 16.0, 24.2, 19.8];
-      final events = <PostureEventModel>[];
-      for (int i = 0; i < testAngles.length; i++) {
-        events.add(
-          PostureEventModel(
-            id: ensureUuid('evt_demo_${now.millisecondsSinceEpoch}_$i'),
-            sessionId: testSessionId,
-            occurredAt: now.subtract(Duration(minutes: 25 - (i * 5))),
-            tiltAngle: testAngles[i],
-            durationSec: widget.activeMode.seconds.toDouble(),
-            feedbackTriggered: true,
-            synced: false,
+      final session2Id =
+          ensureUuid('sess_demo_normal_${now.millisecondsSinceEpoch}');
+      await PoiseLocalDatabase.instance.insertSession(
+        SessionModel(
+          id: session2Id,
+          deviceId: testDeviceId,
+          userId: userId,
+          modeId: ModeModel.idForActivityMode(widget.activeMode),
+          startedAt: now.subtract(const Duration(minutes: 40)),
+          endedAt: now.subtract(const Duration(minutes: 5)),
+          updatedAt: now,
+          baselineAngle: 15.0,
+          synced: false,
+        ),
+      );
+
+      // 3. Insert realistic posture events with complete correction metrics
+      final events = <PostureEventModel>[
+        // Events in Session 1 (Focus Mode: 10° threshold)
+        PostureEventModel(
+          id: ensureUuid('evt_demo_1_${now.millisecondsSinceEpoch}'),
+          sessionId: session1Id,
+          occurredAt: now.subtract(const Duration(minutes: 80)),
+          tiltAngle: 17.5,
+          durationSec: 2.1,
+          feedbackTriggered: true,
+          correctedAt: now
+              .subtract(const Duration(minutes: 80))
+              .add(const Duration(milliseconds: 2100)),
+          correctionTimeSec: 2.1,
+          synced: false,
+        ),
+        PostureEventModel(
+          id: ensureUuid('evt_demo_2_${now.millisecondsSinceEpoch}'),
+          sessionId: session1Id,
+          occurredAt: now.subtract(const Duration(minutes: 65)),
+          tiltAngle: 21.0,
+          durationSec: 3.4,
+          feedbackTriggered: true,
+          correctedAt: now
+              .subtract(const Duration(minutes: 65))
+              .add(const Duration(milliseconds: 3400)),
+          correctionTimeSec: 3.4,
+          synced: false,
+        ),
+        PostureEventModel(
+          id: ensureUuid('evt_demo_3_${now.millisecondsSinceEpoch}'),
+          sessionId: session1Id,
+          occurredAt: now.subtract(const Duration(minutes: 50)),
+          tiltAngle: 15.2,
+          durationSec: 1.8,
+          feedbackTriggered: true,
+          correctedAt: now
+              .subtract(const Duration(minutes: 50))
+              .add(const Duration(milliseconds: 1800)),
+          correctionTimeSec: 1.8,
+          synced: false,
+        ),
+
+        // Events in Session 2 (Current Mode: Normal / Leisure / Commuting)
+        PostureEventModel(
+          id: ensureUuid('evt_demo_4_${now.millisecondsSinceEpoch}'),
+          sessionId: session2Id,
+          occurredAt: now.subtract(const Duration(minutes: 32)),
+          tiltAngle: 22.4,
+          durationSec: 3.1,
+          feedbackTriggered: true,
+          correctedAt: now
+              .subtract(const Duration(minutes: 32))
+              .add(const Duration(milliseconds: 3100)),
+          correctionTimeSec: 3.1,
+          synced: false,
+        ),
+        PostureEventModel(
+          id: ensureUuid('evt_demo_5_${now.millisecondsSinceEpoch}'),
+          sessionId: session2Id,
+          occurredAt: now.subtract(const Duration(minutes: 20)),
+          tiltAngle: 26.8,
+          durationSec: 4.5,
+          feedbackTriggered: true,
+          correctedAt: now
+              .subtract(const Duration(minutes: 20))
+              .add(const Duration(milliseconds: 4500)),
+          correctionTimeSec: 4.5,
+          synced: false,
+        ),
+        PostureEventModel(
+          id: ensureUuid('evt_demo_6_${now.millisecondsSinceEpoch}'),
+          sessionId: session2Id,
+          occurredAt: now.subtract(const Duration(minutes: 10)),
+          tiltAngle: 19.0,
+          durationSec: 2.2,
+          feedbackTriggered: true,
+          correctedAt: now
+              .subtract(const Duration(minutes: 10))
+              .add(const Duration(milliseconds: 2200)),
+          correctionTimeSec: 2.2,
+          synced: false,
+        ),
+      ];
+
+      await PoiseLocalDatabase.instance.insertPostureEventsBatch(events);
+      PoiseLocalDatabase.instance.notifyDatabaseChanged();
+
+      if (isGuest) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            backgroundColor: Color(0xFF0288D1),
+            behavior: SnackBarBehavior.floating,
+            content: Text(
+              'Simulated 2 sessions & 6 posture events in local database! To sync to Supabase Cloud, sign in in Profile tab.',
+            ),
+            duration: Duration(seconds: 4),
           ),
         );
+        return;
       }
-      await PoiseLocalDatabase.instance.insertPostureEventsBatch(events);
 
-      // 4. Trigger cloud sync
+      // 4. Trigger cloud sync for authenticated account
       setState(() => _isSyncing = true);
       final success = await SyncService.instance.syncToCloud();
       if (!mounted) return;
@@ -1009,10 +1171,11 @@ class _DashboardTabState extends State<DashboardTab> {
               RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           content: Text(
             success
-                ? 'Test device, session, and 5 posture events synced to Supabase!'
+                ? 'Simulated 2 test sessions & 6 posture events synced to Supabase Cloud! Verified all columns.'
                 : (errorMsg ??
-                    'Demo data generated locally. Connect cloud to sync.'),
+                    'Demo data generated locally. Connect internet to sync.'),
           ),
+          duration: const Duration(seconds: 4),
         ),
       );
     } catch (e) {
@@ -1295,41 +1458,63 @@ class _DashboardTabState extends State<DashboardTab> {
                     onTap: _handleCloudSyncTap,
                     borderRadius: const BorderRadius.horizontal(
                         right: Radius.circular(12)),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        if (_isSyncing)
-                          const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(
-                                strokeWidth: 2, color: Colors.black87),
-                          )
-                        else
-                          Icon(
-                            _isCloudSynced
-                                ? Icons.cloud_done_rounded
-                                : Icons.cloud_off_rounded,
-                            color: _isCloudSynced
-                                ? Colors.black87
-                                : Colors.black54,
-                            size: 19,
+                    child: Builder(builder: (context) {
+                      final isOnline = NetworkService.instance.isConnected;
+                      final isGuest = SocialAuth.instance.user == null;
+                      return Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          if (_isSyncing)
+                            const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2, color: Colors.black87),
+                            )
+                          else if (!isOnline)
+                            const Icon(
+                              Icons.cloud_off_rounded,
+                              color: Colors.black45,
+                              size: 19,
+                            )
+                          else if (isGuest)
+                            const Icon(
+                              Icons.cloud_off_rounded,
+                              color: Colors.black54,
+                              size: 19,
+                            )
+                          else
+                            Icon(
+                              _isCloudSynced
+                                  ? Icons.cloud_done_rounded
+                                  : Icons.sync_rounded,
+                              color: _isCloudSynced
+                                  ? Colors.black87
+                                  : Colors.black54,
+                              size: 19,
+                            ),
+                          const SizedBox(width: 8),
+                          Text(
+                            _isSyncing
+                                ? 'Syncing...'
+                                : (!isOnline
+                                    ? 'Offline'
+                                    : (isGuest
+                                        ? 'Guest Mode'
+                                        : (_isCloudSynced
+                                            ? 'Cloud Sync'
+                                            : 'Not Synced'))),
+                            style: TextStyle(
+                              color: (!isOnline || isGuest || !_isCloudSynced)
+                                  ? Colors.black54
+                                  : Colors.black87,
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
-                        const SizedBox(width: 8),
-                        Text(
-                          _isSyncing
-                              ? 'Syncing...'
-                              : (_isCloudSynced ? 'Cloud Sync' : 'Not Synced'),
-                          style: TextStyle(
-                            color: _isCloudSynced
-                                ? Colors.black87
-                                : Colors.black54,
-                            fontSize: 10.5,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
-                    ),
+                        ],
+                      );
+                    }),
                   ),
                 ),
               ),

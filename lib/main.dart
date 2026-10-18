@@ -8,6 +8,7 @@ import 'feedback_preferences.dart';
 import 'session_entry_page.dart';
 import 'notifications/local_notification_service.dart';
 import 'database/local_database.dart';
+import 'database/sync_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -20,6 +21,7 @@ Future<void> main() async {
   await FeedbackPreferences.load();
   await SocialAuth.instance.initialize();
   await LocalNotificationService.instance.initialize();
+  SyncService.instance.initialize();
   try {
     await PoiseLocalDatabase.instance.init();
   } catch (_) {}

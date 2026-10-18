@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-/// Mode presets owned by Controls and displayed by the fatigue engine.
+/// Mode presets owned by Controls and displayed by the posture engine.
 enum ActivityMode {
   normal(
     'Normal',

@@ -67,7 +67,7 @@ void main() {
             corrected_at TEXT,
             correction_time_sec REAL,
             tilt_angle REAL NOT NULL,
-            duration_sec REAL NOT NULL,
+            duration_sec REAL,
             feedback_triggered INTEGER NOT NULL DEFAULT 1,
             synced INTEGER NOT NULL DEFAULT 0
           )
@@ -360,5 +360,43 @@ void main() {
     await PoiseLocalDatabase.instance.endSession('poise_hardware_standalone_sess', now);
     final endedTodaySec = await PoiseLocalDatabase.instance.getTodayTotalWearSeconds();
     expect(endedTodaySec, standaloneDurationSec); // 29s
+  });
+
+  test('Posture event lifecycle: improper posture detected -> corrected = 1 completed event with clean Supabase mapping', () async {
+    final now = DateTime.now();
+    final slouchStart = now.subtract(const Duration(seconds: 4));
+    final correctedAt = now;
+    const correctionSec = 4.0;
+    const peakTilt = 21.5;
+
+    final event = PostureEventModel(
+      id: 'test_evt_1',
+      sessionId: 'sess_clean_cycle',
+      occurredAt: slouchStart,
+      tiltAngle: peakTilt,
+      feedbackTriggered: true,
+      correctedAt: correctedAt,
+      correctionTimeSec: correctionSec,
+      durationSec: correctionSec,
+      synced: false,
+    );
+
+    await PoiseLocalDatabase.instance.insertPostureEvent(event);
+
+    final events = await PoiseLocalDatabase.instance.getEventsForSession('sess_clean_cycle');
+    expect(events.length, 1);
+    expect(events.first.id, 'test_evt_1');
+    expect(events.first.tiltAngle, peakTilt);
+    expect(events.first.correctionTimeSec, correctionSec);
+    expect(events.first.correctedAt, isNotNull);
+
+    // Verify Supabase cloud map does not have redundant 'synced' column
+    final supabaseMap = event.toSupabaseMap();
+    expect(supabaseMap.containsKey('synced'), false,
+        reason: 'Supabase cloud table must not have redundant synced column');
+    expect(supabaseMap['correction_time_sec'], correctionSec);
+    expect(supabaseMap['tilt_angle'], peakTilt);
+    expect(supabaseMap['id'], isNotNull);
+    expect(supabaseMap['session_id'], isNotNull);
   });
 }

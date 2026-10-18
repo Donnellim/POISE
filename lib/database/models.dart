@@ -315,7 +315,6 @@ class PostureEventModel {
         'feedback_triggered': feedbackTriggered,
         'corrected_at': correctedAt?.toUtc().toIso8601String(),
         'correction_time_sec': effectiveCorrectionTimeSec,
-        'synced': true,
       };
 
   factory PostureEventModel.fromMap(Map<String, dynamic> map) {
