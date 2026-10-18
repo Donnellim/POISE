@@ -45,20 +45,22 @@ class _DashboardTabState extends State<DashboardTab> {
   bool _isSyncing = false;
 
   // ── 3. Real-Time Pitch Angle (Degrees from POISE Sensor) ──
-  double _pitchAngle = 0.0;
+  double? _livePostureAngle;
   double _sessionBaselineAngle = 0.0;
 
   // ── 4. Slouch Correction Tracking ──
   DateTime? _activeSlouchStartTime;
   double _peakSlouchAngle = 0.0;
 
-  // ── 5. Session Elapsed Timer ──
-  bool _isSessionRunning = true;
+  // ── 5. Session Elapsed Timer & Controls ──
+  bool _isSessionRunning = false;
+  bool _isSessionPaused = false;
   int _sessionSeconds = 0;
   Timer? _sessionTimer;
   bool _calibrationDialogOpen = false;
   StreamSubscription<double>? _blePitchSub;
   StreamSubscription<int>? _bleDeviceSessionSub;
+  StreamSubscription<PoiseDeviceSessionAction>? _bleDeviceSessionActionSub;
   StreamSubscription<int>? _bleBatterySub;
   int _batteryLevel = 100;
   DateTime? _lastAlertNotificationTime;
@@ -72,7 +74,9 @@ class _DashboardTabState extends State<DashboardTab> {
         setState(() {
           _sessionSeconds = devSec;
           _isSessionRunning = true;
+          _isSessionPaused = false;
           _isCalibrated = true;
+          _livePostureAngle = PoiseBleService.instance.currentPitchAngle;
         });
         await _ensureActiveSessionStarted();
         return;
@@ -88,7 +92,9 @@ class _DashboardTabState extends State<DashboardTab> {
             _sessionBaselineAngle = active.baselineAngle;
             _sessionSeconds = math.max(_sessionSeconds, elapsed);
             _isSessionRunning = true;
+            _isSessionPaused = false;
             _isCalibrated = true;
+            _livePostureAngle = PoiseBleService.instance.currentPitchAngle;
           });
         }
         return;
@@ -141,7 +147,7 @@ class _DashboardTabState extends State<DashboardTab> {
     } catch (_) {}
   }
 
-  Future<void> _startNewSession() async {
+  Future<void> _startNewSession({bool fromHardware = false}) async {
     if (!_isBluetoothConnected) return;
 
     // One calibration per session: tare zero baseline to current sensor angle
@@ -149,13 +155,18 @@ class _DashboardTabState extends State<DashboardTab> {
     _sessionBaselineAngle = currentRaw;
     await PoiseBleService.instance.setZeroBaseline(baselinePitch: currentRaw);
 
+    if (!fromHardware) {
+      await PoiseBleService.instance.sendSessionCommand('SESSION:START');
+    }
+
     _closeCurrentSession();
 
     setState(() {
       _isCalibrated = true;
       _isSessionRunning = true;
+      _isSessionPaused = false;
       _sessionSeconds = 0;
-      _pitchAngle = 0.0;
+      _livePostureAngle = null; // Await fresh telemetry from FFE1
       _activeSlouchStartTime = null;
       _peakSlouchAngle = 0.0;
     });
@@ -167,7 +178,9 @@ class _DashboardTabState extends State<DashboardTab> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'New session started! Baseline calibrated at ${currentRaw >= 0 ? "+" : ""}${currentRaw.toStringAsFixed(1)}°',
+            fromHardware
+                ? 'Device session started! Calibrated baseline set.'
+                : 'New session started! Baseline calibrated at ${currentRaw >= 0 ? "+" : ""}${currentRaw.toStringAsFixed(1)}°',
           ),
           duration: const Duration(seconds: 2),
           behavior: SnackBarBehavior.floating,
@@ -176,7 +189,48 @@ class _DashboardTabState extends State<DashboardTab> {
     }
   }
 
-  Future<void> _endCurrentSession() async {
+  void _pauseSession({bool fromHardware = false}) {
+    if (!_isSessionRunning || _isSessionPaused) return;
+    _sessionTimer?.cancel();
+    if (!fromHardware) {
+      PoiseBleService.instance.sendSessionCommand('SESSION:PAUSE');
+    }
+    setState(() {
+      _isSessionPaused = true;
+      _livePostureAngle = null; // Stop presenting incoming values as active session readings
+    });
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Session paused.'),
+          duration: Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  void _resumeSession({bool fromHardware = false}) {
+    if (!_isSessionRunning || !_isSessionPaused) return;
+    if (!fromHardware) {
+      PoiseBleService.instance.sendSessionCommand('SESSION:RESUME');
+    }
+    setState(() {
+      _isSessionPaused = false;
+    });
+    _startTimer();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Session resumed.'),
+          duration: Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  Future<void> _endCurrentSession({bool fromHardware = false}) async {
     // If user was slouching when session ended, finalize the posture event
     if (_activeSlouchStartTime != null) {
       final now = DateTime.now();
@@ -205,6 +259,10 @@ class _DashboardTabState extends State<DashboardTab> {
       }
     }
 
+    if (!fromHardware) {
+      await PoiseBleService.instance.sendSessionCommand('SESSION:END');
+    }
+
     _closeCurrentSession();
 
     final todaySec =
@@ -213,15 +271,19 @@ class _DashboardTabState extends State<DashboardTab> {
     if (mounted) {
       setState(() {
         _isSessionRunning = false;
+        _isSessionPaused = false;
+        _livePostureAngle = null; // Clear live posture reading
         _sessionSeconds = todaySec > 0 ? todaySec : _sessionSeconds;
       });
     }
 
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Session ended. Posture data saved to analytics.'),
-          duration: Duration(seconds: 2),
+        SnackBar(
+          content: Text(fromHardware
+              ? 'Session ended on device. Posture data saved to analytics.'
+              : 'Session ended. Posture data saved to analytics.'),
+          duration: const Duration(seconds: 2),
           behavior: SnackBarBehavior.floating,
         ),
       );
@@ -317,12 +379,16 @@ class _DashboardTabState extends State<DashboardTab> {
         .addListener(_onNetworkStatusChanged);
     SyncService.instance.status.addListener(_onSyncStatusChanged);
     unawaited(SyncService.instance.restoreFromCloud());
-    _pitchAngle = PoiseBleService.instance.currentPitchAngle;
     _sessionBaselineAngle = PoiseBleService.instance.zeroBaselineOffset;
+    if (PoiseBleService.instance.isTesting) {
+      _isSessionRunning = true;
+      _livePostureAngle = 0.0;
+    }
     if (widget.isBluetoothConnected != null) {
       _isBluetoothConnected = widget.isBluetoothConnected!;
       if (!_isBluetoothConnected) {
         _isSessionRunning = false;
+        _livePostureAngle = null;
       }
     }
     _startTimer();
@@ -356,10 +422,37 @@ class _DashboardTabState extends State<DashboardTab> {
       }
     });
 
+    _bleDeviceSessionActionSub =
+        PoiseBleService.instance.deviceSessionActionStream.listen((action) {
+      if (!mounted) return;
+      switch (action) {
+        case PoiseDeviceSessionAction.started:
+          if (!_isSessionRunning) {
+            _startNewSession(fromHardware: true);
+          }
+          break;
+        case PoiseDeviceSessionAction.paused:
+          _pauseSession(fromHardware: true);
+          break;
+        case PoiseDeviceSessionAction.resumed:
+          _resumeSession(fromHardware: true);
+          break;
+        case PoiseDeviceSessionAction.ended:
+          if (_isSessionRunning) {
+            _endCurrentSession(fromHardware: true);
+          }
+          break;
+      }
+    });
+
     _blePitchSub = PoiseBleService.instance.pitchAngleStream.listen((angle) {
       if (mounted && _canMonitor) {
+        if (!_isSessionRunning || _isSessionPaused) {
+          // When monitoring is inactive or paused, do NOT present incoming values as active session readings
+          return;
+        }
         setState(() {
-          _pitchAngle = angle;
+          _livePostureAngle = angle;
           if (_isSessionRunning) {
             final isSlouched = angle.abs() > widget.activeMode.angle;
             final now = DateTime.now();
@@ -446,12 +539,17 @@ class _DashboardTabState extends State<DashboardTab> {
         setState(() {
           _isBluetoothConnected = false;
           _isSessionRunning = false;
+          _isSessionPaused = false;
+          _livePostureAngle = null;
         });
       } else {
         setState(() {
           _isBluetoothConnected = true;
           _isSessionRunning = _isCalibrated;
-          _pitchAngle = PoiseBleService.instance.currentPitchAngle;
+          _isSessionPaused = false;
+          if (_isCalibrated) {
+            _livePostureAngle = PoiseBleService.instance.currentPitchAngle;
+          }
         });
         _syncActiveSessionWithDeviceAndDatabase();
       }
@@ -477,7 +575,7 @@ class _DashboardTabState extends State<DashboardTab> {
   void _startTimer() {
     _sessionTimer?.cancel();
     _sessionTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (_isSessionRunning && _canMonitor) {
+      if (_isSessionRunning && !_isSessionPaused && _canMonitor) {
         setState(() {
           _sessionSeconds++;
         });
@@ -519,6 +617,7 @@ class _DashboardTabState extends State<DashboardTab> {
     SyncService.instance.status.removeListener(_onSyncStatusChanged);
     _blePitchSub?.cancel();
     _bleDeviceSessionSub?.cancel();
+    _bleDeviceSessionActionSub?.cancel();
     _bleBatterySub?.cancel();
     _sessionTimer?.cancel();
     super.dispose();
@@ -654,7 +753,6 @@ class _DashboardTabState extends State<DashboardTab> {
         setState(() {
           _isBluetoothConnected = true;
           _isSessionRunning = _isCalibrated;
-          _pitchAngle = ble.currentPitchAngle;
         });
         widget.onBluetoothChanged?.call(true);
       } else {
@@ -1284,7 +1382,7 @@ class _DashboardTabState extends State<DashboardTab> {
     widget.onBaselineSet?.call();
     setState(() {
       _isCalibrated = true;
-      _pitchAngle = 0.0;
+      _livePostureAngle = 0.0;
       _sessionSeconds = 0;
       _isSessionRunning = true;
     });
@@ -1524,99 +1622,93 @@ class _DashboardTabState extends State<DashboardTab> {
         const SizedBox(height: 6),
 
         // ── Speedometer Gauge & Live Spine Model (Full Width, Compact Gaps) ──
-        AspectRatio(
-          aspectRatio: 318 / 340,
-          child: FittedBox(
-            fit: BoxFit.contain,
-            child: SizedBox(
-              width: 318,
-              height: 340,
-              child: Stack(
-                alignment: Alignment.topCenter,
-                children: [
-                  // Display only the calibrated pitch; gestures must not fabricate samples.
-                  CustomPaint(
-                    key: const ValueKey('pitch-gauge'),
-                    size: const Size(318, 185),
-                    painter: _SpeedometerGaugePainter(
-                      angle: _canMonitor ? _pitchAngle : 0.0,
-                      isConnected: _canMonitor,
-                    ),
-                  ),
+        Builder(builder: (context) {
+          final isLiveActive =
+              _isSessionRunning && !_isSessionPaused && _canMonitor;
+          final hasReading = isLiveActive && _livePostureAngle != null;
+          final displayAngle = hasReading
+              ? (_livePostureAngle! == _livePostureAngle!.roundToDouble()
+                  ? '${_livePostureAngle!.toInt()}°'
+                  : '${_livePostureAngle!.toStringAsFixed(1)}°')
+              : '--°';
 
-                  // 2. Center Reading Overlay
-                  Positioned(
-                    top: 50,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          _canMonitor ? '${_pitchAngle.toInt()}°' : '--°',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 32,
-                            fontWeight: FontWeight.w900,
-                            shadows: [
-                              Shadow(
-                                  color: Colors.black38,
-                                  offset: Offset(0, 2),
-                                  blurRadius: 4),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        const Text(
-                          'PITCH ANGLE',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 8,
-                            fontWeight: FontWeight.w800,
-                            letterSpacing: 1,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: Colors.black.withValues(alpha: 0.25),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Text(
-                            _canMonitor
-                                ? 'Baseline: ${_sessionBaselineAngle >= 0 ? "+" : ""}${_sessionBaselineAngle.toStringAsFixed(1)}°'
-                                : 'Baseline: --°',
+          return AspectRatio(
+            aspectRatio: 318 / 340,
+            child: FittedBox(
+              fit: BoxFit.contain,
+              child: SizedBox(
+                width: 318,
+                height: 340,
+                child: Stack(
+                  alignment: Alignment.topCenter,
+                  children: [
+                    CustomPaint(
+                      key: const ValueKey('pitch-gauge'),
+                      size: const Size(318, 185),
+                      painter: _SpeedometerGaugePainter(
+                        angle: hasReading ? _livePostureAngle! : 0.0,
+                        isConnected: hasReading,
+                      ),
+                    ),
+
+                    // 2. Center Reading Overlay (Cleanly positioned inside the arch without overlapping dial or needle)
+                    Positioned(
+                      top: 60,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            displayAngle,
                             style: const TextStyle(
-                              color: Colors.white70,
-                              fontSize: 9,
-                              fontWeight: FontWeight.w600,
+                              color: Colors.white,
+                              fontSize: 28,
+                              fontWeight: FontWeight.w900,
+                              shadows: [
+                                Shadow(
+                                    color: Colors.black38,
+                                    offset: Offset(0, 2),
+                                    blurRadius: 4),
+                              ],
                             ),
                           ),
-                        ),
-                      ],
+                          const SizedBox(height: 2),
+                          const Text(
+                            'POSTURE DEVIATION',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 8,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: 1,
+                            ),
+                          ),
+                          const SizedBox(height: 1),
+                          const Text(
+                            'PITCH ANGLE',
+                            style: TextStyle(
+                              color: Colors.white70,
+                              fontSize: 6.5,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: 0.8,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
 
-                  // 3. Holographic Spine Model (Standby)
-                  Positioned(
-                    bottom: 0,
-                    child: Image.asset(
-                      'assets/images/spine_model.png',
-                      height: 182,
-                      fit: BoxFit.contain,
-                      errorBuilder: (context, error, stackTrace) {
-                        return RealTimeSpineTracker(
-                          pitchAngle: 0.0,
-                          isConnected: _canMonitor,
-                        );
-                      },
+                    // 3. Real-Time Dynamic 3D Holographic Spine & Posture Model
+                    Positioned(
+                      bottom: 0,
+                      child: RealTimeSpineTracker(
+                        pitchAngle: hasReading ? _livePostureAngle! : 0.0,
+                        isConnected: hasReading,
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
-          ),
-        ),
+          );
+        }),
         const SizedBox(height: 10),
 
         // ── Current Mode Card (Read-only Controls Summary) ──
@@ -1764,7 +1856,7 @@ class _DashboardTabState extends State<DashboardTab> {
 
         // ── Session Elapsed Card ──
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
           decoration: BoxDecoration(
             color: const Color(0xFF55BCE0),
             borderRadius: BorderRadius.circular(14),
@@ -1776,11 +1868,19 @@ class _DashboardTabState extends State<DashboardTab> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Text('Session Elapsed',
-                        style: TextStyle(
+                    FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        _isSessionRunning
+                            ? (_isSessionPaused ? 'Session Paused' : 'Session Running')
+                            : 'Session Inactive',
+                        style: const TextStyle(
                             color: Colors.black54,
                             fontSize: 11,
-                            fontWeight: FontWeight.w600)),
+                            fontWeight: FontWeight.w600),
+                      ),
+                    ),
                     const SizedBox(height: 2),
                     Text(
                       _formatDuration(_sessionSeconds),
@@ -1792,14 +1892,62 @@ class _DashboardTabState extends State<DashboardTab> {
                   ],
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 6),
+              if (_isSessionRunning) ...[
+                GestureDetector(
+                  key: const ValueKey('session-pause-toggle'),
+                  onTap: _isBluetoothConnected
+                      ? (_isSessionPaused ? _resumeSession : _pauseSession)
+                      : null,
+                  behavior: HitTestBehavior.opaque,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 7, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: _isSessionPaused
+                          ? const Color(0xFF2E7D32)
+                          : const Color(0xFFF57C00),
+                      borderRadius: BorderRadius.circular(16),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.15),
+                          blurRadius: 4,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          _isSessionPaused
+                              ? Icons.play_arrow_rounded
+                              : Icons.pause_rounded,
+                          color: Colors.white,
+                          size: 15,
+                        ),
+                        const SizedBox(width: 3),
+                        Text(
+                          _isSessionPaused ? 'Resume' : 'Pause',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 4),
+              ],
               GestureDetector(
                 key: const ValueKey('session-toggle'),
                 onTap: _isBluetoothConnected ? _toggleSession : null,
                 behavior: HitTestBehavior.opaque,
                 child: Container(
                   padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
                   decoration: BoxDecoration(
                     color: _isSessionRunning
                         ? const Color(0xFFD32F2F)
@@ -1821,14 +1969,14 @@ class _DashboardTabState extends State<DashboardTab> {
                             ? Icons.stop_rounded
                             : Icons.play_arrow_rounded,
                         color: Colors.white,
-                        size: 16,
+                        size: 15,
                       ),
-                      const SizedBox(width: 4),
+                      const SizedBox(width: 3),
                       Text(
                         _isSessionRunning ? 'End Session' : 'Start Session',
                         style: const TextStyle(
                           color: Colors.white,
-                          fontSize: 11.5,
+                          fontSize: 10.5,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
@@ -2010,7 +2158,7 @@ class _SpeedometerGaugePainter extends CustomPainter {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Real-Time Articulated Spine Tracker Widget
+// Real-Time Articulated 3D Holographic Spine Model Tracker
 // ─────────────────────────────────────────────────────────────────────────────
 
 class RealTimeSpineTracker extends StatelessWidget {
@@ -2025,219 +2173,81 @@ class RealTimeSpineTracker extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      height: 190,
-      width: 190,
-      child: CustomPaint(
-        size: const Size(190, 190),
-        painter: _SpineTrackerPainter(
-          pitchAngle: isConnected ? pitchAngle : 0.0,
-          isConnected: isConnected,
-        ),
-      ),
+    final double targetAngle = isConnected ? pitchAngle : 0.0;
+
+    return TweenAnimationBuilder<double>(
+      tween: Tween<double>(end: targetAngle),
+      duration: const Duration(milliseconds: 240),
+      curve: Curves.easeOutCubic,
+      builder: (context, animatedAngle, child) {
+        // Biomechanical tilt angle in radians (scaled naturally for torso inclination)
+        final double angleRad = (animatedAngle * math.pi / 180.0) * 0.72;
+
+        Color auraColor;
+        if (!isConnected) {
+          auraColor = Colors.transparent;
+        } else if (animatedAngle.abs() <= 10.0) {
+          auraColor = const Color(0xFF00E5FF).withValues(alpha: 0.28);
+        } else if (animatedAngle.abs() <= 15.0) {
+          auraColor = const Color(0xFFFFD600).withValues(alpha: 0.30);
+        } else {
+          auraColor = const Color(0xFFFF3D00).withValues(alpha: 0.38);
+        }
+
+        return SizedBox(
+          height: 182,
+          width: 140,
+          child: Stack(
+            alignment: Alignment.bottomCenter,
+            clipBehavior: Clip.none,
+            children: [
+              // Dynamic posture aura glow behind model
+              if (isConnected)
+                Positioned(
+                  bottom: 20,
+                  child: Container(
+                    width: 100,
+                    height: 130,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: auraColor,
+                          blurRadius: 36,
+                          spreadRadius: 8,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
+              // The authentic 3D holographic spine model from spine_model.png,
+              // dynamically articulated to follow the POISE pitch angle in real time.
+              Transform(
+                alignment: const Alignment(0.0, 0.95),
+                transform: Matrix4.identity()
+                  ..rotateZ(angleRad)
+                  ..multiply(
+                    Matrix4.translationValues(
+                      math.sin(angleRad) * 6.0,
+                      (1.0 - math.cos(angleRad)) * -4.0,
+                      0.0,
+                    ),
+                  ),
+                child: SizedBox(
+                  height: 182,
+                  width: 110,
+                  child: Image.asset(
+                    'assets/images/spine_model.png',
+                    height: 182,
+                    fit: BoxFit.contain,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
-  }
-}
-
-class _SpineTrackerPainter extends CustomPainter {
-  final double pitchAngle;
-  final bool isConnected;
-
-  _SpineTrackerPainter({
-    required this.pitchAngle,
-    required this.isConnected,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final double w = size.width;
-    final double h = size.height;
-
-    // Base pivot at the lower lumbar spine
-    final Offset basePivot = Offset(w * 0.44, h * 0.95);
-
-    final double angleRad = (pitchAngle * math.pi / 180.0) * 0.75;
-
-    Color spineGlowColor;
-    Color tensionColor;
-    if (!isConnected) {
-      spineGlowColor = const Color(0xFF64B5F6).withValues(alpha: 0.4);
-      tensionColor = Colors.white54;
-    } else if (pitchAngle.abs() <= 10) {
-      spineGlowColor = const Color(0xFF00E676); // Optimal Green
-      tensionColor = const Color(0xFF00E5FF);
-    } else if (pitchAngle.abs() <= 25) {
-      spineGlowColor = const Color(0xFF00E5FF); // Moderate Cyan/Blue
-      tensionColor = const Color(0xFF40C4FF);
-    } else {
-      spineGlowColor = const Color(0xFFFF7043); // High strain Orange/Red
-      tensionColor = const Color(0xFFFF5252);
-    }
-
-    // 1. Draw Silhouette Wireframe Mesh
-    _drawSilhouette(canvas, basePivot, angleRad, isConnected);
-
-    // 2. Draw Real-Time Dynamic Vertebrae & Spine Column
-    _drawVertebraeColumn(
-      canvas,
-      basePivot,
-      angleRad,
-      spineGlowColor,
-      tensionColor,
-    );
-  }
-
-  void _drawSilhouette(
-    Canvas canvas,
-    Offset base,
-    double angleRad,
-    bool connected,
-  ) {
-    canvas.save();
-    canvas.translate(base.dx, base.dy);
-    canvas.rotate(angleRad * 0.6);
-    canvas.translate(-base.dx, -base.dy);
-
-    final bodyPaint = Paint()
-      ..color = const Color(0xFF08213E).withValues(alpha: 0.88)
-      ..style = PaintingStyle.fill;
-
-    final wirePaint = Paint()
-      ..color =
-          const Color(0xFF00B0FF).withValues(alpha: connected ? 0.35 : 0.18)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.0;
-
-    final Path bodyPath = Path();
-    bodyPath.moveTo(base.dx - 22, base.dy);
-    bodyPath.cubicTo(
-      base.dx - 28,
-      base.dy - 60,
-      base.dx - 22,
-      base.dy - 110,
-      base.dx - 12,
-      base.dy - 135,
-    );
-    bodyPath.cubicTo(
-      base.dx - 24,
-      base.dy - 155,
-      base.dx - 12,
-      base.dy - 180,
-      base.dx + 12,
-      base.dy - 182,
-    );
-    bodyPath.cubicTo(
-      base.dx + 28,
-      base.dy - 182,
-      base.dx + 38,
-      base.dy - 172,
-      base.dx + 42,
-      base.dy - 158,
-    );
-    bodyPath.lineTo(base.dx + 42, base.dy - 146);
-    bodyPath.lineTo(base.dx + 48, base.dy - 142);
-    bodyPath.lineTo(base.dx + 41, base.dy - 138);
-    bodyPath.lineTo(base.dx + 42, base.dy - 130);
-    bodyPath.lineTo(base.dx + 35, base.dy - 120);
-    bodyPath.lineTo(base.dx + 26, base.dy - 105);
-    bodyPath.cubicTo(
-      base.dx + 36,
-      base.dy - 85,
-      base.dx + 44,
-      base.dy - 50,
-      base.dx + 38,
-      base.dy,
-    );
-    bodyPath.close();
-
-    canvas.drawPath(bodyPath, bodyPaint);
-
-    for (double y = base.dy - 170; y <= base.dy - 10; y += 18) {
-      canvas.drawLine(
-        Offset(base.dx - 26, y),
-        Offset(base.dx + 42, y),
-        wirePaint,
-      );
-    }
-    for (double x = base.dx - 20; x <= base.dx + 40; x += 16) {
-      canvas.drawLine(
-        Offset(x, base.dy - 175),
-        Offset(x, base.dy),
-        wirePaint,
-      );
-    }
-
-    canvas.restore();
-  }
-
-  void _drawVertebraeColumn(
-    Canvas canvas,
-    Offset base,
-    double angleRad,
-    Color glowColor,
-    Color tensionColor,
-  ) {
-    const int numVertebrae = 10;
-    final List<Offset> points = [];
-    const double spineHeight = 155.0;
-
-    for (int i = 0; i < numVertebrae; i++) {
-      final double t = i / (numVertebrae - 1);
-      final double naturalCurveX = math.sin(t * math.pi * 1.4) * 7.0;
-      final double flexShiftX = math.pow(t, 1.4) * (math.tan(angleRad) * 44.0);
-      final double flexShiftY = (1.0 - math.cos(angleRad * t)) * 7.0;
-
-      final double px = base.dx - 4 + naturalCurveX + flexShiftX;
-      final double py = base.dy - (t * spineHeight) + flexShiftY;
-
-      points.add(Offset(px, py));
-    }
-
-    final glowPaint = Paint()
-      ..color = glowColor.withValues(alpha: 0.35)
-      ..strokeWidth = 6.0
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round;
-
-    final linePaint = Paint()
-      ..color = tensionColor
-      ..strokeWidth = 2.4
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round;
-
-    final Path spinePath = Path();
-    spinePath.moveTo(points.first.dx, points.first.dy);
-    for (int i = 1; i < points.length; i++) {
-      final p0 = points[i - 1];
-      final p1 = points[i];
-      final midX = (p0.dx + p1.dx) / 2;
-      final midY = (p0.dy + p1.dy) / 2;
-      spinePath.quadraticBezierTo(p0.dx, p0.dy, midX, midY);
-    }
-    spinePath.lineTo(points.last.dx, points.last.dy);
-
-    canvas.drawPath(spinePath, glowPaint);
-    canvas.drawPath(spinePath, linePaint);
-
-    for (int i = 0; i < points.length; i++) {
-      final p = points[i];
-      final bool isCervical = (i >= 7);
-
-      final haloPaint = Paint()
-        ..color = glowColor.withValues(alpha: isCervical ? 0.6 : 0.45)
-        ..style = PaintingStyle.fill;
-      canvas.drawCircle(p, isCervical ? 5.0 : 4.0, haloPaint);
-
-      final corePaint = Paint()
-        ..color = isConnected ? Colors.white : Colors.white70
-        ..style = PaintingStyle.fill;
-      canvas.drawCircle(p, isCervical ? 2.5 : 2.0, corePaint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _SpineTrackerPainter oldDelegate) {
-    return oldDelegate.pitchAngle != pitchAngle ||
-        oldDelegate.isConnected != isConnected;
   }
 }

@@ -465,6 +465,17 @@ class PoiseLocalDatabase {
     return res.map(SessionModel.fromMap).toList();
   }
 
+  Future<List<SessionModel>> getAllSessions({int limit = 50}) async {
+    if (_isHeadlessTest) return const [];
+    final db = await database;
+    final res = await db.query(
+      'sessions',
+      orderBy: 'started_at DESC',
+      limit: limit,
+    );
+    return res.map(SessionModel.fromMap).toList();
+  }
+
   Future<List<SessionModel>> getUnsyncedSessions() async {
     final db = await database;
     final res = await db.query(
@@ -846,6 +857,11 @@ class PoiseLocalDatabase {
           slouchEvents: 1,
           warnings: feedback ? 1 : 0,
           correctionSeconds: corrSec,
+          eventId: e['id'] as String?,
+          sessionId: sRow['id'] as String?,
+          userId: sRow['user_id'] as String?,
+          baselineAngle: baselineAngle,
+          feedbackTriggered: feedback,
         ));
 
         // Advance cursor past this slouch
@@ -873,6 +889,10 @@ class PoiseLocalDatabase {
             slouchEvents: 0,
             warnings: 0,
             correctionSeconds: null,
+            sessionId: sRow['id'] as String?,
+            userId: sRow['user_id'] as String?,
+            baselineAngle: baselineAngle,
+            feedbackTriggered: false,
           ));
         }
       }

@@ -242,7 +242,7 @@ void main() {
       await tester.pump();
       expect(tester.takeException(), isNull);
       final reading = tester.getRect(find.text('0°'));
-      final model = tester.getRect(find.byType(Image).first);
+      final model = tester.getRect(find.byType(RealTimeSpineTracker));
       expect(reading.bottom, lessThan(model.top));
       expect(find.text('Optimal Posture'), findsNothing);
       expect(

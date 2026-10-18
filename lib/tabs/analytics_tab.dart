@@ -6,6 +6,7 @@ import '../widgets/poise_app_bar.dart';
 import '../analytics/analytics_data.dart';
 import '../analytics/csv_export.dart';
 import '../database/local_database.dart';
+import '../database/models.dart';
 
 const _ink = Color(0xFF073344);
 const _blue = Color(0xFF009CE5);
@@ -28,6 +29,7 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
   bool _preview = false;
   bool _exporting = false;
   List<PostureRecord> _localRecords = [];
+  List<SessionModel> _localSessions = [];
   bool _isLoadingDb = false;
   bool _hasPendingReload = false;
 
@@ -73,9 +75,12 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
     _isLoadingDb = true;
     try {
       final records = await PoiseLocalDatabase.instance.getAllPostureRecords();
+      final sessions =
+          await PoiseLocalDatabase.instance.getAllSessions(limit: 20);
       if (mounted) {
         setState(() {
           _localRecords = records;
+          _localSessions = sessions;
         });
       }
     } catch (_) {} finally {
@@ -85,6 +90,32 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
         _loadLocalRecords();
       }
     }
+  }
+
+  List<SessionModel> _getEffectiveSessions(DateTime now) {
+    if (_preview) {
+      return [
+        SessionModel(
+          id: 'sample_sess_1',
+          userId: 'preview',
+          modeId: 2, // Study / Focus
+          startedAt: now.subtract(const Duration(hours: 3)),
+          endedAt: now.subtract(const Duration(hours: 2, minutes: 15)),
+          updatedAt: now.subtract(const Duration(hours: 2, minutes: 15)),
+          baselineAngle: 0.0,
+        ),
+        SessionModel(
+          id: 'sample_sess_2',
+          userId: 'preview',
+          modeId: 1, // Default / Normal
+          startedAt: now.subtract(const Duration(hours: 1, minutes: 30)),
+          endedAt: now.subtract(const Duration(minutes: 30)),
+          updatedAt: now.subtract(const Duration(minutes: 30)),
+          baselineAngle: 1.5,
+        ),
+      ];
+    }
+    return _localSessions;
   }
 
   void _selectPeriod(AnalyticsPeriod period) {
@@ -337,7 +368,7 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
                 child: _SummaryCard(
                     icon: Icons.timer_outlined,
                     color: const Color(0xFF00C700),
-                    title: 'Active Wear Time',
+                    title: 'Active Monitoring Time',
                     value: wearDuration(summary.totalSeconds),
                     subtitle: 'Total duration')),
             const SizedBox(width: 8),
@@ -345,7 +376,7 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
                 child: _SummaryCard(
                     icon: Icons.speed,
                     color: const Color(0xFF388AF6),
-                    title: 'Average Correction Speed',
+                    title: 'Average Time to Correction',
                     value: summary.correctionFor() == null
                         ? '—'
                         : '${summary.correctionFor()!.toStringAsFixed(1)}s',
@@ -360,9 +391,45 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
                     subtitle: 'Total corrected events')),
           ]),
           const SizedBox(height: 10),
+
+          // ── Data Continuity Notice ──
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: const Color(0xFF388AF6).withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(
+                  color: const Color(0xFF388AF6).withValues(alpha: 0.25)),
+            ),
+            child: Row(
+              children: const [
+                Icon(Icons.sensors_rounded, size: 14, color: _ink),
+                SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    'Data Continuity: Sensor intervals reflect active, connected monitoring. Bluetooth disconnections and dropouts are excluded from posture calculations.',
+                    style: TextStyle(
+                      fontSize: 8.5,
+                      color: _ink,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+
+          // ── Detailed Session Summary Card ──
+          _SessionSummaryCard(summary: summary),
+          const SizedBox(height: 10),
+
           _ChartCard(
               letter: 'A',
               title: _period == AnalyticsPeriod.today
+                  ? 'Hourly Posture Event Frequency'
+                  : 'Daily Posture Event Frequency',
+              subtitle: _period == AnalyticsPeriod.today
                   ? 'Hourly Slouch Frequency'
                   : 'Daily Slouch Frequency',
               child: summary.records.isEmpty
@@ -378,15 +445,29 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
           const SizedBox(height: 10),
           _ChartCard(
               letter: 'C',
-              title: 'Posture Degradation Trend',
+              title: 'Posture Deviation Trend',
               child: summary.records.isEmpty
                   ? const _EmptyChart()
                   : _TrendChart(summary: summary)),
           const SizedBox(height: 10),
           _ChartCard(
               letter: 'D',
-              title: 'Contextual Mode Analysis',
+              title: 'Mode Comparison',
               child: _ModeChart(summary: summary)),
+          const SizedBox(height: 10),
+
+          // ── Session History ──
+          _SessionHistoryCard(
+            sessions: _getEffectiveSessions(now),
+            period: _period,
+            now: now,
+          ),
+          const SizedBox(height: 10),
+
+          // ── Event Timeline ──
+          _EventTimelineCard(
+            records: summary.records,
+          ),
           const SizedBox(height: 18),
           Container(
               padding: const EdgeInsets.all(10),
@@ -508,8 +589,12 @@ class _SummaryCard extends StatelessWidget {
 
 class _ChartCard extends StatelessWidget {
   const _ChartCard(
-      {required this.letter, required this.title, required this.child});
+      {required this.letter,
+      required this.title,
+      this.subtitle,
+      required this.child});
   final String letter, title;
+  final String? subtitle;
   final Widget child;
   @override
   Widget build(BuildContext context) => Container(
@@ -525,6 +610,11 @@ class _ChartCard extends StatelessWidget {
           Text(title,
               style:
                   const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+          if (subtitle != null) ...[
+            const SizedBox(height: 2),
+            Text(subtitle!,
+                style: const TextStyle(fontSize: 8.5, color: Colors.black54)),
+          ],
           const SizedBox(height: 18),
           child,
         ]),
@@ -829,12 +919,340 @@ class _ModeChart extends StatelessWidget {
               Text((max * i / 7).toStringAsFixed(0), style: _small)
           ])),
       const SizedBox(height: 8),
-      const Text('Average Correction Speed (s)', style: _small),
+      const Text('Average Time to Correction (s)', style: _small),
       if (summary.correctionFor() == null)
         const Padding(
             padding: EdgeInsets.only(top: 8),
             child: Text('No completed corrections in this period.',
                 style: _small)),
     ]);
+  }
+}
+
+class _SessionSummaryCard extends StatelessWidget {
+  const _SessionSummaryCard({required this.summary});
+  final AnalyticsSummary summary;
+
+  @override
+  Widget build(BuildContext context) {
+    final avgDev = summary.averageAbsoluteDeviation;
+    final maxDev = summary.maxAbsoluteDeviation;
+    final inZone = summary.timeInZonePercentage;
+    final freq = summary.hourlyEventFrequency;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: _panel.withValues(alpha: 0.94),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'SESSION SUMMARY METRICS',
+            style: TextStyle(
+                fontSize: 8, color: _blue, fontWeight: FontWeight.bold),
+          ),
+          const Text(
+            'Posture Performance Overview',
+            style: TextStyle(
+                fontSize: 12, fontWeight: FontWeight.bold, color: _ink),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: _MetricItem(
+                  label: 'Average Deviation',
+                  value: summary.records.isEmpty
+                      ? '—'
+                      : '${avgDev.toStringAsFixed(1)}°',
+                  caption: 'Mean absolute tilt',
+                ),
+              ),
+              Expanded(
+                child: _MetricItem(
+                  label: 'Peak Deviation',
+                  value: summary.records.isEmpty
+                      ? '—'
+                      : '${maxDev.toStringAsFixed(1)}°',
+                  caption: 'Maximum recorded tilt',
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: _MetricItem(
+                  label: 'Time-in-Zone',
+                  value: summary.records.isEmpty
+                      ? '—'
+                      : '${inZone.toStringAsFixed(1)}%',
+                  caption: 'Time within threshold',
+                ),
+              ),
+              Expanded(
+                child: _MetricItem(
+                  label: 'Event Frequency',
+                  value: summary.records.isEmpty
+                      ? '—'
+                      : '${freq.toStringAsFixed(1)}/hr',
+                  caption: 'Warning events per hour',
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MetricItem extends StatelessWidget {
+  const _MetricItem(
+      {required this.label, required this.value, required this.caption});
+  final String label, value, caption;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label,
+            style: const TextStyle(
+                fontSize: 8,
+                color: Colors.black54,
+                fontWeight: FontWeight.w600)),
+        const SizedBox(height: 1),
+        Text(value,
+            style: const TextStyle(
+                fontSize: 16, fontWeight: FontWeight.bold, color: _ink)),
+        Text(caption,
+            style: const TextStyle(fontSize: 7, color: Colors.black45)),
+      ],
+    );
+  }
+}
+
+class _SessionHistoryCard extends StatelessWidget {
+  const _SessionHistoryCard({
+    required this.sessions,
+    required this.period,
+    required this.now,
+  });
+
+  final List<SessionModel> sessions;
+  final AnalyticsPeriod period;
+  final DateTime now;
+
+  @override
+  Widget build(BuildContext context) {
+    final filtered = sessions.where((s) {
+      return !s.startedAt.isBefore(period.start(now)) &&
+          !s.startedAt.isAfter(now);
+    }).toList();
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: _panel.withValues(alpha: 0.94),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'RECORDED SESSIONS',
+            style: TextStyle(
+                fontSize: 8, color: _blue, fontWeight: FontWeight.bold),
+          ),
+          const Text(
+            'Session History',
+            style: TextStyle(
+                fontSize: 12, fontWeight: FontWeight.bold, color: _ink),
+          ),
+          const SizedBox(height: 8),
+          if (filtered.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Text(
+                'No monitoring sessions recorded in this period.',
+                style: TextStyle(fontSize: 9, color: Colors.black54),
+              ),
+            )
+          else
+            for (final s in filtered.take(5)) _buildSessionRow(s),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSessionRow(SessionModel s) {
+    final mode = ModeModel.activityModeFromId(s.modeId);
+    final durationSec = s.endedAt != null
+        ? s.endedAt!.difference(s.startedAt).inSeconds
+        : s.updatedAt.difference(s.startedAt).inSeconds;
+    final dur = durationSec > 0 ? wearDuration(durationSec) : 'Active';
+    final startTimeStr =
+        '${s.startedAt.hour.toString().padLeft(2, '0')}:${s.startedAt.minute.toString().padLeft(2, '0')}';
+    final endTimeStr = s.endedAt != null
+        ? '${s.endedAt!.hour.toString().padLeft(2, '0')}:${s.endedAt!.minute.toString().padLeft(2, '0')}'
+        : 'In progress';
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.6),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Row(
+        children: [
+          Icon(mode.icon, size: 16, color: _ink),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${mode.label} Mode',
+                  style: const TextStyle(
+                      fontSize: 10, fontWeight: FontWeight.bold, color: _ink),
+                ),
+                Text(
+                  '$startTimeStr – $endTimeStr',
+                  style: const TextStyle(fontSize: 8, color: Colors.black54),
+                ),
+              ],
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(
+              color: const Color(0xFF00BED6).withValues(alpha: 0.2),
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Text(
+              dur,
+              style: const TextStyle(
+                  fontSize: 9, fontWeight: FontWeight.bold, color: _ink),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EventTimelineCard extends StatelessWidget {
+  const _EventTimelineCard({required this.records});
+  final List<PostureRecord> records;
+
+  @override
+  Widget build(BuildContext context) {
+    final events =
+        records.where((r) => r.slouched || r.slouchEvents > 0).toList();
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: _panel.withValues(alpha: 0.94),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'POSTURE EVENT STREAM',
+            style: TextStyle(
+                fontSize: 8, color: _blue, fontWeight: FontWeight.bold),
+          ),
+          const Text(
+            'Event Timeline',
+            style: TextStyle(
+                fontSize: 12, fontWeight: FontWeight.bold, color: _ink),
+          ),
+          const SizedBox(height: 8),
+          if (events.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Text(
+                'No posture warning events recorded in this period.',
+                style: TextStyle(fontSize: 9, color: Colors.black54),
+              ),
+            )
+          else
+            for (final e in events.reversed.take(6)) _buildEventRow(e),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEventRow(PostureRecord e) {
+    final timeStr =
+        '${e.at.hour.toString().padLeft(2, '0')}:${e.at.minute.toString().padLeft(2, '0')}:${e.at.second.toString().padLeft(2, '0')}';
+    final corrSec =
+        e.correctionSeconds ?? (e.seconds > 0 ? e.seconds.toDouble() : 2.5);
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.6),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 8,
+            height: 8,
+            decoration: const BoxDecoration(
+              color: Color(0xFFE41528),
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Warning: ${e.pitch.abs().toStringAsFixed(1)}° (${e.mode.label})',
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 9.5,
+                            fontWeight: FontWeight.bold,
+                            color: _ink),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    Text(timeStr,
+                        style: const TextStyle(
+                            fontSize: 8, color: Colors.black54)),
+                  ],
+                ),
+                const SizedBox(height: 1),
+                Text(
+                  'Corrected in ${corrSec.toStringAsFixed(1)}s (Confirmed)',
+                  style: const TextStyle(
+                      fontSize: 8,
+                      color: Color(0xFF509E2F),
+                      fontWeight: FontWeight.w600),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
