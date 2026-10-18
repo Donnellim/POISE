@@ -13,14 +13,17 @@ import 'package:flutter_application_1/sign_up_page.dart';
 import 'package:flutter_application_1/sign_in_email_page.dart';
 import 'package:flutter_application_1/auth/social_auth.dart';
 import 'package:flutter_application_1/widgets/guest_account_prompt.dart';
+import 'package:flutter_application_1/database/local_database.dart';
 
 void main() {
   setUp(() {
     SharedPreferences.setMockInitialValues({});
+    PoiseLocalDatabase.instance.mockRecordsForTesting = [];
     PoiseBleService.instance.resetForTesting();
     PoiseBleService.instance.simulateForTesting = true;
   });
   tearDown(() async {
+    PoiseLocalDatabase.instance.mockRecordsForTesting = null;
     PoiseBleService.instance.resetForTesting();
     PoiseBleService.instance.simulateForTesting = false;
     await SocialAuth.instance.signOut();
@@ -128,9 +131,7 @@ void main() {
     expect(tester.widget<GetStartedPage>(find.byType(GetStartedPage)).isGuest,
         true);
     await tester.tap(find.text('Connect to Bluetooth'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('bluetooth-toggle')));
-    await tester.pump(const Duration(seconds: 2));
+    await tester.pump(const Duration(seconds: 4));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Proceed to Calibration'));
     await tester.pumpAndSettle();

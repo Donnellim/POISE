@@ -6,7 +6,7 @@ import 'package:flutter_application_1/activity_mode.dart';
 import 'package:flutter_application_1/dashboard_page.dart';
 import 'package:flutter_application_1/calibration_page.dart';
 import 'package:flutter_application_1/tabs/dashboard_tab.dart';
-import 'package:flutter_application_1/bluetooth_connect_page.dart';
+import 'package:flutter_application_1/get_started_page.dart';
 
 import 'package:flutter_application_1/database/local_database.dart';
 
@@ -166,7 +166,7 @@ void main() {
     expect(find.text('00:00:00'), findsOneWidget);
     await tester.tap(find.text('Not Connected'));
     await tester.pumpAndSettle();
-    expect(find.byType(BluetoothConnectPage), findsNothing);
+    expect(find.byType(GetStartedPage), findsNothing);
     expect(Navigator.of(tester.element(find.byType(DashboardTab))).canPop(),
         false);
     expect(find.text('Device Connected'), findsOneWidget);
@@ -184,7 +184,7 @@ void main() {
     for (var attempt = 0; attempt < 2; attempt++) {
       await tester.tap(find.text('Not Connected'));
       await tester.pumpAndSettle();
-      expect(find.byType(BluetoothConnectPage), findsNothing);
+      expect(find.byType(GetStartedPage), findsNothing);
       expect(find.text('Not Connected'), findsOneWidget);
       expect(find.textContaining('Could not reconnect'), findsOneWidget);
       expect(find.text('Set Your Neutral Posture'), findsNothing);
@@ -262,18 +262,18 @@ void main() {
   }
 
   testWidgets(
-      'BluetoothConnectPage toggle enables scan and renders without Material assertion',
+      'GetStartedPage renders and connects without Material assertion',
       (tester) async {
     tester.view.physicalSize = const Size(360, 800);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    await tester.pumpWidget(const MaterialApp(home: BluetoothConnectPage()));
-    expect(find.byKey(const Key('bluetooth-toggle')), findsOneWidget);
+    await tester.pumpWidget(const MaterialApp(home: GetStartedPage()));
+    expect(find.text("Let's Get Started"), findsOneWidget);
+    expect(find.text('Connect to Bluetooth'), findsOneWidget);
 
-    // Toggle Bluetooth ON
-    await tester.tap(find.byKey(const Key('bluetooth-toggle')));
+    await tester.tap(find.text('Connect to Bluetooth'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
 

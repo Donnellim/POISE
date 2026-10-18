@@ -12,6 +12,7 @@ import 'activity_mode.dart';
 import 'tabs/analytics_tab.dart';
 import 'tabs/controls_tab.dart';
 import 'tabs/profile_tab.dart';
+import 'database/local_database.dart';
 
 class DashboardPage extends StatefulWidget {
   const DashboardPage({
@@ -213,6 +214,9 @@ class _DashboardPageState extends State<DashboardPage> {
       onTap: () {
         ScaffoldMessenger.of(context).clearSnackBars();
         setState(() => _currentIndex = index);
+        if (index == 1) {
+          PoiseLocalDatabase.instance.notifyDatabaseChanged();
+        }
       },
       behavior: HitTestBehavior.opaque,
       child: Container(

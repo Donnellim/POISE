@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'widgets/gradient_background.dart';
 import 'dashboard_page.dart';
 import 'device_session.dart';
+import 'get_started_page.dart';
 import 'notifications/local_notification_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -202,7 +203,15 @@ class CalibrationPage extends StatelessWidget {
                 height: 52,
                 child: ElevatedButton(
                   onPressed: () {
-                    Navigator.of(context).pop();
+                    if (Navigator.of(context).canPop()) {
+                      Navigator.of(context).pop();
+                    } else {
+                      Navigator.of(context).pushReplacement(
+                        MaterialPageRoute<void>(
+                          builder: (_) => GetStartedPage(isGuest: isGuest),
+                        ),
+                      );
+                    }
                   },
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF64A3F2), // Lighter blue

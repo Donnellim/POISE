@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'bluetooth/poise_ble_service.dart';
+import 'calibration_page.dart';
 import 'widgets/gradient_background.dart';
 import 'device_setup_page.dart';
 import 'dashboard_page.dart';
@@ -62,13 +64,26 @@ class _DeviceCheckPageState extends State<DeviceCheckPage> {
                           child: SizedBox(
                             height: 52,
                             child: ElevatedButton(
-                              onPressed: () {
-                                Navigator.of(context).pushReplacement(
-                                  MaterialPageRoute(
-                                    builder: (_) => DeviceSetupPage(
-                                        isGuest: widget.isGuest),
-                                  ),
-                                );
+                              onPressed: () async {
+                                final ble = PoiseBleService.instance;
+                                if (ble.isConnected ||
+                                    await ble.checkAndConnectSystemDevice()) {
+                                  if (!context.mounted) return;
+                                  Navigator.of(context).pushReplacement(
+                                    MaterialPageRoute(
+                                      builder: (_) => CalibrationPage(
+                                          isGuest: widget.isGuest),
+                                    ),
+                                  );
+                                } else {
+                                  if (!context.mounted) return;
+                                  Navigator.of(context).pushReplacement(
+                                    MaterialPageRoute(
+                                      builder: (_) => DeviceSetupPage(
+                                          isGuest: widget.isGuest),
+                                    ),
+                                  );
+                                }
                               },
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: Colors.blue,

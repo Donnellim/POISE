@@ -94,14 +94,14 @@ CREATE TABLE IF NOT EXISTS public.posture_events (
     corrected_at TIMESTAMPTZ,
     correction_time_sec NUMERIC,
     tilt_angle NUMERIC NOT NULL,
-    duration_sec NUMERIC NOT NULL,
     feedback_triggered BOOLEAN NOT NULL DEFAULT true,
     synced BOOLEAN NOT NULL DEFAULT true
 );
 
--- Migrations for existing posture_events tables
+-- Migrations for posture_events table: add correction tracking and drop redundant duration_sec
 ALTER TABLE IF EXISTS public.posture_events ADD COLUMN IF NOT EXISTS corrected_at TIMESTAMPTZ;
 ALTER TABLE IF EXISTS public.posture_events ADD COLUMN IF NOT EXISTS correction_time_sec NUMERIC;
+ALTER TABLE IF EXISTS public.posture_events DROP COLUMN IF EXISTS duration_sec;
 
 CREATE INDEX IF NOT EXISTS idx_posture_events_session_id ON public.posture_events(session_id);
 CREATE INDEX IF NOT EXISTS idx_posture_events_occurred_at ON public.posture_events(occurred_at);

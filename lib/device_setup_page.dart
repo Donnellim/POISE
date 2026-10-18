@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'bluetooth/poise_ble_service.dart';
+import 'calibration_page.dart';
 import 'widgets/gradient_background.dart';
 import 'get_started_page.dart';
 import 'device_check_page.dart';
@@ -38,12 +40,26 @@ class DeviceSetupPage extends StatelessWidget {
                     child: SizedBox(
                       height: 52,
                       child: ElevatedButton(
-                        onPressed: () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => GetStartedPage(isGuest: isGuest),
-                            ),
-                          );
+                        onPressed: () async {
+                          final ble = PoiseBleService.instance;
+                          if (ble.isConnected ||
+                              await ble.checkAndConnectSystemDevice()) {
+                            if (!context.mounted) return;
+                            Navigator.of(context).pushReplacement(
+                              MaterialPageRoute(
+                                builder: (_) =>
+                                    CalibrationPage(isGuest: isGuest),
+                              ),
+                            );
+                          } else {
+                            if (!context.mounted) return;
+                            Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) =>
+                                    GetStartedPage(isGuest: isGuest),
+                              ),
+                            );
+                          }
                         },
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.blue,

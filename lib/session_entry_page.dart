@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'bluetooth/poise_ble_service.dart';
+import 'calibration_page.dart';
 import 'dashboard_page.dart';
 import 'device_check_page.dart';
 import 'device_session.dart';
@@ -45,18 +46,40 @@ class _SessionEntryPageState extends State<SessionEntryPage> {
     final adapterOn = await ble.isBluetoothAdapterOn();
     final resume = await DeviceSession.shouldResume(adapterOn: adapterOn);
     await DeviceSession.signedIn();
-    if (resume && adapterOn) await ble.restoreConnection();
+    if (resume && adapterOn) {
+      await ble.restoreConnection();
+    }
+
     final prefs = await SharedPreferences.getInstance();
+    final bool bluetoothEnabled =
+        prefs.getBool('poise.bluetoothEnabled') ?? true;
+
+    // Check if device is connected / synced via Quick Settings or system Bluetooth
+    final isQuickSettingsSynced = adapterOn &&
+        bluetoothEnabled &&
+        await ble.checkAndConnectSystemDevice();
+
     if (!mounted) return;
-    Navigator.of(context).pushReplacement(MaterialPageRoute<void>(
-      builder: (_) => resume
-          ? DashboardPage(
-              initialBluetoothConnected: ble.isConnected,
-              initialNotificationPermissionGranted:
-                  prefs.getBool('poise.notificationPermission') ?? false,
-            )
-          : const DeviceCheckPage(),
-    ));
+
+    if (resume) {
+      Navigator.of(context).pushReplacement(MaterialPageRoute<void>(
+        builder: (_) => DashboardPage(
+          initialBluetoothConnected: ble.isConnected,
+          initialNotificationPermissionGranted:
+              prefs.getBool('poise.notificationPermission') ?? false,
+        ),
+      ));
+    } else if (isQuickSettingsSynced) {
+      // User connected via Quick Settings panel outside the app without in-app device check.
+      // Auto-detected and synced -> Go directly to CalibrationPage.
+      Navigator.of(context).pushReplacement(MaterialPageRoute<void>(
+        builder: (_) => const CalibrationPage(isGuest: false),
+      ));
+    } else {
+      Navigator.of(context).pushReplacement(MaterialPageRoute<void>(
+        builder: (_) => const DeviceCheckPage(),
+      ));
+    }
   }
 
   @override

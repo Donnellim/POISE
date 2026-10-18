@@ -1,5 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_application_1/calibration_page.dart';
+import 'package:flutter_application_1/get_started_page.dart';
 import 'package:flutter_application_1/session_entry_page.dart';
 import 'package:flutter_application_1/device_check_page.dart';
 import 'package:flutter_application_1/dashboard_page.dart';
@@ -121,4 +123,71 @@ void main() {
         false);
     expect(PoiseBleService.instance.isConnected, false);
   });
+
+  testWidgets(
+      'connecting via Quick Settings panel routes directly to CalibrationPage upon login',
+      (tester) async {
+    final ble = PoiseBleService.instance;
+    ble.simulateForTesting = true;
+    ble.simulateQuickSettingsSynced = true;
+
+    // User signs in without previous app setup, but device was connected in Quick Settings
+    await tester.pumpWidget(const MaterialApp(home: SessionEntryPage()));
+    await tester.pumpAndSettle();
+
+    // Must route straight to CalibrationPage, bypassing DeviceCheckPage
+    expect(find.byType(CalibrationPage), findsOneWidget);
+    expect(find.byType(DeviceCheckPage), findsNothing);
+    expect(find.byType(DashboardPage), findsNothing);
+    expect(ble.isConnected, true);
+  });
+
+  test('requestEnableBluetooth returns true immediately if adapter is already on',
+      () async {
+    final ble = PoiseBleService.instance;
+    ble.simulateForTesting = true;
+    // When adapter is already on, requestEnableBluetooth resolves true without throwing/prompting
+    final result = await ble.requestEnableBluetooth();
+    expect(result, true);
+  });
+
+  testWidgets(
+      'GetStartedPage Connect to Bluetooth automatically finds and connects POISE device, navigating to CalibrationPage',
+      (tester) async {
+    final ble = PoiseBleService.instance;
+    ble.simulateForTesting = true;
+
+    await tester.pumpWidget(const MaterialApp(home: GetStartedPage()));
+    await tester.pumpAndSettle();
+
+    expect(find.text("Let's Get Started"), findsOneWidget);
+    expect(find.text('Connect to Bluetooth'), findsOneWidget);
+
+    // Tap Connect to Bluetooth
+    await tester.tap(find.text('Connect to Bluetooth'));
+    await tester.pump(const Duration(milliseconds: 500));
+
+    // Simulated scan automatically discovers POISE device and triggers connection
+    await tester.pump(const Duration(seconds: 4));
+    await tester.pumpAndSettle();
+
+    // Connected modal appears
+    expect(find.text('Proceed to Calibration'), findsOneWidget);
+    expect(ble.isConnected, true);
+
+    // Tap Proceed to Calibration
+    await tester.tap(find.text('Proceed to Calibration'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(CalibrationPage), findsOneWidget);
+
+    // Tapping Cancel on CalibrationPage returns back to GetStartedPage
+    expect(find.text('Cancel'), findsOneWidget);
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(GetStartedPage), findsOneWidget);
+    expect(find.byType(CalibrationPage), findsNothing);
+  });
 }
+

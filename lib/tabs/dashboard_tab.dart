@@ -57,8 +57,51 @@ class _DashboardTabState extends State<DashboardTab> {
   Timer? _sessionTimer;
   bool _calibrationDialogOpen = false;
   StreamSubscription<double>? _blePitchSub;
+  StreamSubscription<int>? _bleDeviceSessionSub;
   DateTime? _lastAlertNotificationTime;
   String? _currentSessionId;
+
+  Future<void> _syncActiveSessionWithDeviceAndDatabase() async {
+    try {
+      // 1. If BLE hardware already reported elapsed session duration
+      final devSec = PoiseBleService.instance.deviceSessionSeconds;
+      if (devSec > 0 && mounted) {
+        setState(() {
+          _sessionSeconds = devSec;
+          _isSessionRunning = true;
+          _isCalibrated = true;
+        });
+        await _ensureActiveSessionStarted();
+        return;
+      }
+
+      // 2. Check if an active monitoring session exists in local database
+      final active = await PoiseLocalDatabase.instance.getLatestActiveSession();
+      if (active != null) {
+        final elapsed = DateTime.now().difference(active.startedAt).inSeconds;
+        if (mounted) {
+          setState(() {
+            _currentSessionId = active.id;
+            _sessionBaselineAngle = active.baselineAngle;
+            _sessionSeconds = math.max(_sessionSeconds, elapsed);
+            _isSessionRunning = true;
+            _isCalibrated = true;
+          });
+        }
+        return;
+      }
+
+      // 3. When session is not currently running, sync Session Elapsed display with today's wear time
+      // so the user sees their wear time reflecting 1:1 with Analytics
+      final todaySec =
+          await PoiseLocalDatabase.instance.getTodayTotalWearSeconds();
+      if (todaySec > 0 && mounted && !_isSessionRunning) {
+        setState(() {
+          _sessionSeconds = todaySec;
+        });
+      }
+    } catch (_) {}
+  }
 
   Future<void> _ensureActiveSessionStarted({double? baselineAngle}) async {
     if (!_canMonitor) return;
@@ -73,13 +116,14 @@ class _DashboardTabState extends State<DashboardTab> {
 
       _sessionBaselineAngle = baselineAngle ?? _sessionBaselineAngle;
       _currentSessionId = 'sess_${now.millisecondsSinceEpoch}';
+      final startedAt = now.subtract(Duration(seconds: _sessionSeconds));
       await PoiseLocalDatabase.instance.insertSession(
         SessionModel(
           id: _currentSessionId!,
           deviceId: deviceId,
           userId: userId,
           modeId: modeId,
-          startedAt: now,
+          startedAt: startedAt,
           updatedAt: now,
           baselineAngle: _sessionBaselineAngle,
           synced: false,
@@ -144,9 +188,15 @@ class _DashboardTabState extends State<DashboardTab> {
 
     _closeCurrentSession();
 
-    setState(() {
-      _isSessionRunning = false;
-    });
+    final todaySec =
+        await PoiseLocalDatabase.instance.getTodayTotalWearSeconds();
+
+    if (mounted) {
+      setState(() {
+        _isSessionRunning = false;
+        _sessionSeconds = todaySec > 0 ? todaySec : _sessionSeconds;
+      });
+    }
 
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -281,6 +331,26 @@ class _DashboardTabState extends State<DashboardTab> {
       }
     }
     _startTimer();
+    _syncActiveSessionWithDeviceAndDatabase();
+
+    _bleDeviceSessionSub =
+        PoiseBleService.instance.deviceSessionSecondsStream.listen((sec) {
+      if (mounted) {
+        setState(() {
+          _sessionSeconds = sec;
+          _isSessionRunning = true;
+          _isCalibrated = true;
+        });
+        if (_currentSessionId != null) {
+          unawaited(PoiseLocalDatabase.instance.updateSessionProgress(
+            _currentSessionId!,
+            DateTime.now(),
+          ));
+        } else {
+          _ensureActiveSessionStarted();
+        }
+      }
+    });
 
     _blePitchSub = PoiseBleService.instance.pitchAngleStream.listen((angle) {
       if (mounted && _canMonitor) {
@@ -302,20 +372,22 @@ class _DashboardTabState extends State<DashboardTab> {
                   NotificationScope.of(context)?.add(PoiseNoticeType.alert);
                 }
 
-                _ensureActiveSessionStarted();
-                if (_currentSessionId != null) {
-                  unawaited(PoiseLocalDatabase.instance.insertPostureEvent(
-                    PostureEventModel(
-                      id: _activeSlouchEventId!,
-                      sessionId: _currentSessionId!,
-                      occurredAt: now,
-                      tiltAngle: angle,
-                      durationSec: 0.0,
-                      feedbackTriggered: true,
-                      synced: false,
-                    ),
-                  ));
+                if (_currentSessionId == null) {
+                  _currentSessionId = 'sess_${now.millisecondsSinceEpoch}';
+                  _ensureActiveSessionStarted();
                 }
+                final sId = _currentSessionId!;
+                unawaited(PoiseLocalDatabase.instance.insertPostureEvent(
+                  PostureEventModel(
+                    id: _activeSlouchEventId!,
+                    sessionId: sId,
+                    occurredAt: now,
+                    tiltAngle: angle,
+                    durationSec: 0.0,
+                    feedbackTriggered: true,
+                    synced: false,
+                  ),
+                ));
               }
             } else {
               if (_activeSlouchStartTime != null &&
@@ -363,6 +435,7 @@ class _DashboardTabState extends State<DashboardTab> {
           _isSessionRunning = _isCalibrated;
           _pitchAngle = PoiseBleService.instance.currentPitchAngle;
         });
+        _syncActiveSessionWithDeviceAndDatabase();
       }
     }
 
@@ -373,6 +446,13 @@ class _DashboardTabState extends State<DashboardTab> {
           _showRecalibrationDialog();
         }
       });
+    }
+
+    if (widget.activeMode != oldWidget.activeMode && _currentSessionId != null) {
+      unawaited(PoiseLocalDatabase.instance.updateSessionMode(
+        _currentSessionId!,
+        ModeModel.idForActivityMode(widget.activeMode),
+      ));
     }
   }
 
@@ -386,8 +466,16 @@ class _DashboardTabState extends State<DashboardTab> {
         if (_shouldTrackDatabaseSession) {
           if (_sessionSeconds == 1 || _currentSessionId == null) {
             _ensureActiveSessionStarted();
-          } else if (_sessionSeconds % 30 == 0) {
-            _recordPeriodicPostureCheck();
+          } else {
+            if (_sessionSeconds % 5 == 0 && _currentSessionId != null) {
+              unawaited(PoiseLocalDatabase.instance.updateSessionProgress(
+                _currentSessionId!,
+                DateTime.now(),
+              ));
+            }
+            if (_sessionSeconds % 30 == 0) {
+              _recordPeriodicPostureCheck();
+            }
           }
         }
       }
@@ -397,6 +485,7 @@ class _DashboardTabState extends State<DashboardTab> {
   @override
   void dispose() {
     _blePitchSub?.cancel();
+    _bleDeviceSessionSub?.cancel();
     _sessionTimer?.cancel();
     super.dispose();
   }
@@ -522,8 +611,10 @@ class _DashboardTabState extends State<DashboardTab> {
           return;
         }
       }
-      if (!mounted) return;
-      final connected = await ble.restoreConnection();
+      bool connected = await ble.restoreConnection();
+      if (!connected) {
+        connected = await ble.checkAndConnectSystemDevice();
+      }
       if (!mounted) return;
       if (connected) {
         setState(() {

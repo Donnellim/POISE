@@ -29,6 +29,7 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
   bool _exporting = false;
   List<PostureRecord> _localRecords = [];
   bool _isLoadingDb = false;
+  bool _hasPendingReload = false;
 
   @override
   void initState() {
@@ -65,7 +66,10 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
   }
 
   Future<void> _loadLocalRecords() async {
-    if (_isLoadingDb) return;
+    if (_isLoadingDb) {
+      _hasPendingReload = true;
+      return;
+    }
     _isLoadingDb = true;
     try {
       final records = await PoiseLocalDatabase.instance.getAllPostureRecords();
@@ -76,6 +80,10 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
       }
     } catch (_) {} finally {
       _isLoadingDb = false;
+      if (_hasPendingReload) {
+        _hasPendingReload = false;
+        _loadLocalRecords();
+      }
     }
   }
 
@@ -650,7 +658,9 @@ class _ZoneChart extends StatelessWidget {
                 style: TextStyle(
                     fontSize: 12, color: color, fontWeight: FontWeight.bold)),
             Text(
-                '${(seconds / summary.totalSeconds * 100).toStringAsFixed(1)}%',
+                summary.totalSeconds == 0
+                    ? '0.0%'
+                    : '${(seconds / summary.totalSeconds * 100).toStringAsFixed(1)}%',
                 style: TextStyle(
                     fontSize: 20, color: color, fontWeight: FontWeight.bold)),
             Text('(${wearDuration(seconds)})',

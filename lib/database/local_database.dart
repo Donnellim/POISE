@@ -6,6 +6,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:sqflite_common_ffi_web/sqflite_ffi_web.dart';
 import 'models.dart';
 import '../analytics/analytics_data.dart';
+import '../activity_mode.dart';
 
 /// Singleton manager for the local SQFlite database on mobile (Android/iOS) and web.
 /// Implements the offline-first buffer and persistent store matching the POISE ERD.
@@ -311,7 +312,7 @@ class PoiseLocalDatabase {
   // ===========================================================================
 
   Future<void> insertSession(SessionModel session) async {
-    if (mockRecordsForTesting != null) {
+    if (_isHeadlessTest) {
       notifyDatabaseChanged();
       return;
     }
@@ -363,7 +364,7 @@ class PoiseLocalDatabase {
   }
 
   Future<void> endSession(String sessionId, DateTime endedAt) async {
-    if (mockRecordsForTesting != null) {
+    if (_isHeadlessTest) {
       notifyDatabaseChanged();
       return;
     }
@@ -381,7 +382,44 @@ class PoiseLocalDatabase {
     notifyDatabaseChanged();
   }
 
+  Future<void> updateSessionProgress(String sessionId, DateTime updatedAt) async {
+    if (_isHeadlessTest) {
+      notifyDatabaseChanged();
+      return;
+    }
+    final db = await database;
+    await db.update(
+      'sessions',
+      {
+        'updated_at': updatedAt.toIso8601String(),
+      },
+      where: 'id = ?',
+      whereArgs: [sessionId],
+    );
+    notifyDatabaseChanged();
+  }
+
+  Future<void> updateSessionMode(String sessionId, int modeId) async {
+    if (_isHeadlessTest) {
+      notifyDatabaseChanged();
+      return;
+    }
+    final db = await database;
+    await db.update(
+      'sessions',
+      {
+        'mode_id': modeId,
+        'updated_at': DateTime.now().toIso8601String(),
+        'synced': 0,
+      },
+      where: 'id = ?',
+      whereArgs: [sessionId],
+    );
+    notifyDatabaseChanged();
+  }
+
   Future<SessionModel?> getActiveSession(String userId) async {
+    if (_isHeadlessTest) return null;
     final db = await database;
     final res = await db.query(
       'sessions',
@@ -392,6 +430,28 @@ class PoiseLocalDatabase {
     );
     if (res.isEmpty) return null;
     return SessionModel.fromMap(res.first);
+  }
+
+  Future<SessionModel?> getLatestActiveSession() async {
+    if (_isHeadlessTest) return null;
+    final db = await database;
+    final res = await db.query(
+      'sessions',
+      where: 'ended_at IS NULL',
+      orderBy: 'started_at DESC',
+      limit: 1,
+    );
+    if (res.isEmpty) return null;
+    return SessionModel.fromMap(res.first);
+  }
+
+  Future<int> getTodayTotalWearSeconds() async {
+    final records = await getAllPostureRecords();
+    final now = DateTime.now();
+    final todayStart = DateTime(now.year, now.month, now.day);
+    final todayRecords = records
+        .where((r) => !r.at.isBefore(todayStart) && !r.at.isAfter(now));
+    return todayRecords.fold<int>(0, (int sum, r) => sum + r.seconds);
   }
 
   Future<List<SessionModel>> getSessionsForUser(String userId) async {
@@ -430,7 +490,7 @@ class PoiseLocalDatabase {
   // ===========================================================================
 
   Future<void> insertPostureEvent(PostureEventModel event) async {
-    if (mockRecordsForTesting != null) {
+    if (_isHeadlessTest) {
       notifyDatabaseChanged();
       return;
     }
@@ -635,55 +695,211 @@ class PoiseLocalDatabase {
   /// Optional mock records list used to bypass raw SQLite I/O during headless widget testing.
   List<PostureRecord>? mockRecordsForTesting;
 
+  bool get _isHeadlessTest =>
+      mockRecordsForTesting != null ||
+      (Platform.environment.containsKey('FLUTTER_TEST') && _db == null);
+
+  /// Helper to generate neutral posture intervals split at hourly boundaries
+  List<PostureRecord> _createNeutralRecords({
+    required DateTime start,
+    required DateTime end,
+    required double baselineAngle,
+    required ActivityMode mode,
+  }) {
+    final records = <PostureRecord>[];
+    if (!end.isAfter(start)) return records;
+
+    var currentStart = start;
+    while (end.isAfter(currentStart)) {
+      final nextHour = DateTime(
+        currentStart.year,
+        currentStart.month,
+        currentStart.day,
+        currentStart.hour + 1,
+      );
+      final chunkEnd = end.isBefore(nextHour) ? end : nextHour;
+      final sec = chunkEnd.difference(currentStart).inSeconds;
+      if (sec > 0) {
+        records.add(PostureRecord(
+          at: currentStart,
+          seconds: sec,
+          pitch: baselineAngle,
+          mode: mode,
+          slouchEvents: 0,
+          warnings: 0,
+          correctionSeconds: null,
+        ));
+      }
+      currentStart = chunkEnd;
+    }
+    return records;
+  }
+
   /// Transforms all stored sessions and posture events into structured PostureRecord objects
   /// for real-time mirroring between the POISE hardware, dashboard monitoring, and Analytics tab.
   Future<List<PostureRecord>> getAllPostureRecords() async {
-    if (mockRecordsForTesting != null) {
-      return List<PostureRecord>.from(mockRecordsForTesting!);
+    if (_isHeadlessTest) {
+      return List<PostureRecord>.from(mockRecordsForTesting ?? const []);
     }
     final db = await database;
-    final res = await db.rawQuery('''
-      SELECT 
-        pe.id,
-        pe.occurred_at,
-        pe.corrected_at,
-        pe.correction_time_sec,
-        pe.tilt_angle,
-        pe.duration_sec,
-        pe.feedback_triggered,
-        s.mode_id
-      FROM posture_events pe
-      LEFT JOIN sessions s ON pe.session_id = s.id
-      ORDER BY pe.occurred_at ASC
-    ''');
 
-    return res.map((row) {
-      final at = DateTime.tryParse(row['occurred_at'] as String? ?? '') ??
-          DateTime.now();
+    final sessionRows = await db.query('sessions', orderBy: 'started_at ASC');
+    final eventRows = await db.query('posture_events', orderBy: 'occurred_at ASC');
+
+    final eventsBySession = <String, List<Map<String, Object?>>>{};
+    final orphanedEvents = <Map<String, Object?>>[];
+    final sessionIds = sessionRows.map((s) => s['id'] as String).toSet();
+
+    for (final e in eventRows) {
+      final sId = e['session_id'] as String?;
+      if (sId != null && sessionIds.contains(sId)) {
+        eventsBySession.putIfAbsent(sId, () => []).add(e);
+      } else {
+        orphanedEvents.add(e);
+      }
+    }
+
+    final allRecords = <PostureRecord>[];
+    final now = DateTime.now();
+
+    for (final sRow in sessionRows) {
+      final sessionStart =
+          DateTime.tryParse(sRow['started_at'] as String? ?? '') ?? now;
+      final endedAtRaw = sRow['ended_at'] as String?;
+      final updatedAtRaw = sRow['updated_at'] as String?;
+
+      DateTime sessionEnd;
+      if (endedAtRaw != null) {
+        sessionEnd = DateTime.tryParse(endedAtRaw) ?? sessionStart;
+      } else {
+        // Active session: sync dynamically to current time, unless stale/abandoned > 30 minutes
+        final updated =
+            updatedAtRaw != null ? DateTime.tryParse(updatedAtRaw) : null;
+        if (updated != null && now.difference(updated).inMinutes > 30) {
+          sessionEnd = updated;
+        } else {
+          sessionEnd = now;
+        }
+      }
+
+      if (sessionEnd.isBefore(sessionStart)) {
+        sessionEnd = sessionStart;
+      }
+
+      final modeId = sRow['mode_id'] as int? ?? 1;
+      final mode = ModeModel.activityModeFromId(modeId);
+      final baselineAngle =
+          (sRow['baseline_angle'] as num?)?.toDouble() ?? 0.0;
+      final sEvents = eventsBySession[sRow['id'] as String] ?? [];
+
+      // Filter and sort slouch events within this session
+      final slouchEvents = <Map<String, Object?>>[];
+      for (final e in sEvents) {
+        final pitch = (e['tilt_angle'] as num?)?.toDouble() ?? 0.0;
+        final feedback = (e['feedback_triggered'] as int? ?? 0) == 1;
+        final isSlouch = feedback || pitch.abs() >= mode.angle;
+        if (isSlouch) {
+          slouchEvents.add(e);
+        }
+      }
+
+      var cursor = sessionStart;
+
+      for (final e in slouchEvents) {
+        final occurredAt =
+            DateTime.tryParse(e['occurred_at'] as String? ?? '') ?? cursor;
+        final correctedAt = e['corrected_at'] != null
+            ? DateTime.tryParse(e['corrected_at'] as String)
+            : null;
+        final corrSec = (e['correction_time_sec'] as num?)?.toDouble() ??
+            (e['duration_sec'] as num?)?.toDouble();
+        final pitch = (e['tilt_angle'] as num?)?.toDouble() ?? mode.angle.toDouble();
+        final feedback = (e['feedback_triggered'] as int? ?? 0) == 1;
+        final slouchDur =
+            (corrSec?.round() ?? 1) > 0 ? (corrSec?.round() ?? 1) : 1;
+
+        // Emit neutral interval before this slouch event if any elapsed
+        if (occurredAt.isAfter(cursor)) {
+          allRecords.addAll(_createNeutralRecords(
+            start: cursor,
+            end: occurredAt,
+            baselineAngle: baselineAngle,
+            mode: mode,
+          ));
+        }
+
+        // Emit the slouch record
+        allRecords.add(PostureRecord(
+          at: occurredAt,
+          correctedAt: correctedAt,
+          seconds: slouchDur,
+          pitch: pitch,
+          mode: mode,
+          slouchEvents: 1,
+          warnings: feedback ? 1 : 0,
+          correctionSeconds: corrSec,
+        ));
+
+        // Advance cursor past this slouch
+        final eventEnd =
+            correctedAt ?? occurredAt.add(Duration(seconds: slouchDur));
+        cursor = eventEnd.isAfter(cursor) ? eventEnd : cursor;
+      }
+
+      // Emit neutral interval from last event to session end
+      if (sessionEnd.isAfter(cursor)) {
+        allRecords.addAll(_createNeutralRecords(
+          start: cursor,
+          end: sessionEnd,
+          baselineAngle: baselineAngle,
+          mode: mode,
+        ));
+      } else if (slouchEvents.isEmpty && sessionStart == sessionEnd) {
+        // If session just started and has 0 seconds, emit at least 1 second neutral baseline if session is active
+        if (endedAtRaw == null) {
+          allRecords.add(PostureRecord(
+            at: sessionStart,
+            seconds: 1,
+            pitch: baselineAngle,
+            mode: mode,
+            slouchEvents: 0,
+            warnings: 0,
+            correctionSeconds: null,
+          ));
+        }
+      }
+    }
+
+    // Process any orphaned events not tied to a registered session
+    for (final row in orphanedEvents) {
+      final at = DateTime.tryParse(row['occurred_at'] as String? ?? '') ?? now;
       final correctedAt = row['corrected_at'] != null
           ? DateTime.tryParse(row['corrected_at'] as String)
           : null;
       final correctionTimeSec =
-          (row['correction_time_sec'] as num?)?.toDouble();
+          (row['correction_time_sec'] as num?)?.toDouble() ??
+              (row['duration_sec'] as num?)?.toDouble();
       final pitch = (row['tilt_angle'] as num?)?.toDouble() ?? 0.0;
-      final durationNum = (row['duration_sec'] as num?)?.toDouble() ?? 1.0;
-      final seconds = durationNum > 0 ? durationNum.round() : 1;
-      final modeId = row['mode_id'] as int? ?? 1;
-      final mode = ModeModel.activityModeFromId(modeId);
+      final seconds = (correctionTimeSec?.round() ?? 1) > 0
+          ? (correctionTimeSec?.round() ?? 1)
+          : 1;
       final feedback = (row['feedback_triggered'] as int? ?? 0) == 1;
-      final isSlouched = pitch.abs() >= mode.angle;
+      final isSlouched = pitch.abs() >= ActivityMode.normal.angle;
       final slouchEvents = (feedback || isSlouched) ? 1 : 0;
-      return PostureRecord(
+      allRecords.add(PostureRecord(
         at: at,
         correctedAt: correctedAt,
-        seconds: seconds > 0 ? seconds : 1,
+        seconds: seconds,
         pitch: pitch,
-        mode: mode,
+        mode: ActivityMode.normal,
         slouchEvents: slouchEvents,
         warnings: slouchEvents,
-        correctionSeconds: correctionTimeSec ?? (slouchEvents > 0 ? durationNum : null),
-      );
-    }).toList();
+        correctionSeconds: correctionTimeSec,
+      ));
+    }
+
+    allRecords.sort((a, b) => a.at.compareTo(b.at));
+    return allRecords;
   }
 
   Future<bool> isDatabaseEmpty() async {
