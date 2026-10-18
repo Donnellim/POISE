@@ -70,12 +70,8 @@ class _GetStartedPageState extends State<GetStartedPage> {
 
       // Prioritize devices matching POISE name prefixes
       final poiseTarget = devices.cast<PoiseDiscoveredDevice?>().firstWhere(
-            (d) =>
-                d != null &&
-                PoiseBleConfig.deviceNamePrefixes.any(
-                  (prefix) => d.name.toUpperCase().contains(prefix.toUpperCase()),
-                ),
-            orElse: () => devices.first,
+            (d) => d != null && PoiseBleConfig.isPoiseDeviceName(d.name),
+            orElse: () => null,
           );
 
       if (poiseTarget != null) {
@@ -88,13 +84,12 @@ class _GetStartedPageState extends State<GetStartedPage> {
     _searchTimer = Timer(const Duration(seconds: 3), () async {
       if (!mounted || !_isConnecting) return;
       final devices = ble.discoveredDevices;
-      if (devices.isNotEmpty) {
-        final target = devices.firstWhere(
-          (d) => PoiseBleConfig.deviceNamePrefixes.any(
-            (prefix) => d.name.toUpperCase().contains(prefix.toUpperCase()),
-          ),
-          orElse: () => devices.first,
-        );
+      final target = devices.cast<PoiseDiscoveredDevice?>().firstWhere(
+            (d) => d != null && PoiseBleConfig.isPoiseDeviceName(d.name),
+            orElse: () => null,
+          );
+
+      if (target != null) {
         await _connectToDevice(target);
       } else {
         await ble.stopScan();
