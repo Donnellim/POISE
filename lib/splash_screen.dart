@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'widgets/gradient_background.dart';
 import 'walkthrough_page.dart';
+import 'notifications/local_notification_service.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key, this.onWalkthroughCompleted});
@@ -22,6 +23,10 @@ class _SplashScreenState extends State<SplashScreen>
   @override
   void initState() {
     super.initState();
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(LocalNotificationService.instance.ensurePermissionOnAppOpen());
+    });
 
     // ── Phase 1: Fade IN the logo (0 → 1.5s) ──
     _fadeInController = AnimationController(

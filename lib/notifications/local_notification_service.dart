@@ -79,6 +79,51 @@ class LocalNotificationService {
     }
   }
 
+  /// Checks whether system notification permissions are currently enabled.
+  Future<bool> isPermissionGranted() async {
+    if (kIsWeb) return true;
+    try {
+      if (!_isInitialized) {
+        await initialize();
+      }
+
+      final androidImplementation =
+          _plugin.resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>();
+      if (androidImplementation != null) {
+        final enabled = await androidImplementation.areNotificationsEnabled();
+        return enabled ?? false;
+      }
+
+      final iosImplementation =
+          _plugin.resolvePlatformSpecificImplementation<
+              IOSFlutterLocalNotificationsPlugin>();
+      if (iosImplementation != null) {
+        final settings = await iosImplementation.checkPermissions();
+        return settings?.isEnabled ?? false;
+      }
+
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Called upon app launch: checks if notification permission is allowed,
+  /// and if not allowed, immediately prompts the OS permission request dialog.
+  Future<bool> ensurePermissionOnAppOpen() async {
+    if (kIsWeb) return true;
+    try {
+      final granted = await isPermissionGranted();
+      if (!granted) {
+        return await requestPermission();
+      }
+      return true;
+    } catch (_) {
+      return await requestPermission();
+    }
+  }
+
   /// Request system notification permissions on Android 13+ and iOS.
   Future<bool> requestPermission() async {
     try {

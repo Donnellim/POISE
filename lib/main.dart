@@ -53,6 +53,9 @@ class _PoiseAppState extends State<PoiseApp> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(LocalNotificationService.instance.ensurePermissionOnAppOpen());
+    });
     SocialAuth.instance.lastError.addListener(_showAuthError);
     _authSubscription = SocialAuth.instance.incomingSignIns.listen((_) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
