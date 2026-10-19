@@ -93,38 +93,26 @@ class _DashboardTabState extends State<DashboardTab> {
 
   Future<void> _syncActiveSessionWithDeviceAndDatabase() async {
     try {
-      // 1. If BLE hardware already reported elapsed session duration
+      // 1. If BLE hardware already reported elapsed session duration during an ongoing session
       final devSec = PoiseBleService.instance.deviceSessionSeconds;
-      if (devSec > 0 && mounted) {
+      if (_isSessionRunning && devSec > 0 && devSec <= 86400 && mounted) {
         setState(() {
           _sessionSeconds = devSec;
-          _isSessionRunning = true;
-          _isSessionPaused = false;
           _isCalibrated = true;
           _livePostureAngle = PoiseBleService.instance.currentPitchAngle;
         });
         _startTimer();
-        await _ensureActiveSessionStarted();
         return;
       }
 
-      // 2. Check if an active monitoring session exists in local database
+      // 2. We do NOT load past database sessions into the active dashboard session timer.
+      // Total wear duration belongs strictly in the Analytics tab.
+      // The session timer on the dashboard must be strictly 00:00:00 when inactive,
+      // and when active, counts strictly from 0 (or active running session).
+      // If there was an unclosed session from a previous run, close it gracefully in history.
       final active = await PoiseLocalDatabase.instance.getLatestActiveSession();
-      if (active != null) {
-        final elapsed = DateTime.now().difference(active.startedAt).inSeconds;
-        if (mounted) {
-          setState(() {
-            _currentSessionId = active.id;
-            _sessionBaselineAngle = active.baselineAngle;
-            _sessionSeconds = math.max(_sessionSeconds, elapsed);
-            _isSessionRunning = true;
-            _isSessionPaused = false;
-            _isCalibrated = true;
-            _livePostureAngle = PoiseBleService.instance.currentPitchAngle;
-          });
-          _startTimer();
-        }
-        return;
+      if (active != null && !_isSessionRunning) {
+        unawaited(PoiseLocalDatabase.instance.endSession(active.id, DateTime.now()));
       }
 
       // 3. Restore calibration state established at startup or calibration page
@@ -449,11 +437,9 @@ class _DashboardTabState extends State<DashboardTab> {
 
     _bleDeviceSessionSub =
         PoiseBleService.instance.deviceSessionSecondsStream.listen((sec) {
-      if (mounted) {
+      if (mounted && _isSessionRunning && sec >= 0 && sec <= 86400) {
         setState(() {
           _sessionSeconds = sec;
-          _isSessionRunning = true;
-          _isCalibrated = true;
         });
         if (_sessionTimer == null || !_sessionTimer!.isActive) {
           _startTimer();
@@ -463,8 +449,6 @@ class _DashboardTabState extends State<DashboardTab> {
             _currentSessionId!,
             DateTime.now(),
           ));
-        } else {
-          _ensureActiveSessionStarted();
         }
       }
     });
@@ -494,8 +478,8 @@ class _DashboardTabState extends State<DashboardTab> {
 
     _blePitchSub = PoiseBleService.instance.pitchAngleStream.listen((angle) {
       if (mounted && _canMonitor) {
-        if (!_isSessionRunning || _isSessionPaused) {
-          // When monitoring is inactive or paused, do NOT present incoming values as active session readings
+        if (_isSessionPaused) {
+          // When session is paused, do NOT present incoming values
           return;
         }
         setState(() {
@@ -594,8 +578,9 @@ class _DashboardTabState extends State<DashboardTab> {
       } else {
         setState(() {
           _isBluetoothConnected = true;
-          _isSessionRunning = _isCalibrated;
+          _isSessionRunning = false;
           _isSessionPaused = false;
+          _sessionSeconds = 0;
           if (_isCalibrated) {
             _livePostureAngle = PoiseBleService.instance.currentPitchAngle;
           }
@@ -674,10 +659,12 @@ class _DashboardTabState extends State<DashboardTab> {
   }
 
   String _formatDuration(int totalSeconds) {
-    if (!_canMonitor || !_isSessionRunning) return '00:00:00';
-    final int hours = totalSeconds ~/ 3600;
-    final int minutes = (totalSeconds % 3600) ~/ 60;
-    final int seconds = totalSeconds % 60;
+    if (!_isSessionRunning) return '00:00:00';
+    final int cleanSec =
+        (totalSeconds < 0 || totalSeconds > 86400) ? 0 : totalSeconds;
+    final int hours = cleanSec ~/ 3600;
+    final int minutes = (cleanSec % 3600) ~/ 60;
+    final int seconds = cleanSec % 60;
     return '${hours.toString().padLeft(2, '0')}:${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
   }
 
@@ -1676,8 +1663,7 @@ class _DashboardTabState extends State<DashboardTab> {
 
         // ── Speedometer Gauge & Live Spine Model (Full Width, Compact Gaps) ──
         Builder(builder: (context) {
-          final isLiveActive =
-              _isSessionRunning && !_isSessionPaused && _canMonitor;
+          final isLiveActive = _canMonitor && !_isSessionPaused;
           final hasReading = isLiveActive && _livePostureAngle != null;
           final displayAngle = hasReading
               ? (_livePostureAngle! == _livePostureAngle!.roundToDouble()

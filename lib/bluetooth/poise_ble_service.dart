@@ -211,7 +211,7 @@ class PoiseBleService {
   int get deviceSessionSeconds => _deviceSessionSeconds;
 
   void updateDeviceSessionSeconds(int seconds) {
-    if (seconds >= 0 && seconds != _deviceSessionSeconds) {
+    if (seconds >= 0 && seconds <= 86400 && seconds != _deviceSessionSeconds) {
       _deviceSessionSeconds = seconds;
       if (!_deviceSessionSecondsController.isClosed) {
         _deviceSessionSecondsController.add(seconds);

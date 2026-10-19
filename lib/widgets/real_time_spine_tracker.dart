@@ -37,23 +37,24 @@ class RealTimeSpineTracker extends StatelessWidget {
     final double angle = isConnected ? pitchAngle.abs() : 0.0;
     final double threshold = activeMode.angle.toDouble();
 
-    // Mode-specific threshold evaluation
-    final bool effectiveAlert =
-        isSlouchAlert || (isConnected && angle > threshold + 5.0);
-    final bool effectiveWarning = isSlouchWarning ||
-        (isConnected && !effectiveAlert && angle > threshold);
+    // Mode-specific threshold and forgiveness dwell evaluation
+    final bool effectiveAlert = isConnected &&
+        (isSlouchAlert || angle > threshold + 8.0);
+    final bool effectiveWarning = isConnected &&
+        !effectiveAlert &&
+        (isSlouchWarning || angle > threshold);
 
-    final Color statusColor = effectiveAlert
-        ? const Color(0xFFFF1744) // Critical Slouch Alert: Neon Red
+    final Color glowColor = effectiveAlert
+        ? const Color(0xFFFF1744) // Exceeded forgiveness time: Glowing Red
         : effectiveWarning
-            ? const Color(0xFFFFB300) // Forgiveness Dwell: Vibrant Amber
+            ? const Color(0xFFFF9100) // Counting forgiveness time: Glowing Orange
             : Colors.transparent;
 
-    final String statusLabel = effectiveAlert
-        ? 'SLOUCH ALERT'
+    final String? glowKey = effectiveAlert
+        ? 'neck-glow-alert'
         : effectiveWarning
-            ? 'WARN (${activeMode.seconds}s)'
-            : '';
+            ? 'neck-glow-warning'
+            : null;
 
     return SizedBox(
       width: 220,
@@ -61,83 +62,63 @@ class RealTimeSpineTracker extends StatelessWidget {
       child: Stack(
         alignment: Alignment.bottomCenter,
         children: [
-          // ── Static 2D Spine Model Image (Side Profile) ──
+          // ── 1. Soft Ambient Halo Behind the Neck (C7–T1 Region) ──
+          // Orange when angle exceeds mode threshold while forgiveness timer is counting.
+          // Red when slouch dwell duration exceeds the mode's forgiveness time.
+          // Invisible (transparent) when posture is within optimal range.
+          if (glowKey != null)
+            Positioned(
+              left: 78,
+              top: 34,
+              child: AnimatedContainer(
+                key: ValueKey(glowKey),
+                duration: const Duration(milliseconds: 250),
+                width: 58,
+                height: 58,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: RadialGradient(
+                    colors: [
+                      glowColor.withValues(alpha: effectiveAlert ? 0.90 : 0.75),
+                      glowColor.withValues(alpha: effectiveAlert ? 0.45 : 0.30),
+                      Colors.transparent,
+                    ],
+                    stops: const [0.0, 0.55, 1.0],
+                  ),
+                ),
+              ),
+            ),
+
+          // ── 2. Static 2D Anatomical Spine Model Profile ──
           Image.asset(
             'assets/images/spine_model.png',
             height: 190,
             fit: BoxFit.contain,
           ),
 
-          // ── C7–T1 Neck Alert / Warning Beacon (Back of Neck) ──
-          // Only shown when a warning or alert is triggered for this mode!
-          // No static marker or badge is shown during optimal posture.
-          if (effectiveAlert || effectiveWarning) ...[
+          // ── 3. Subtle Neck Surface Illumination (C7–T1) ──
+          if (glowKey != null)
             Positioned(
-              left: 98,
-              top: 50,
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
-                width: 24,
-                height: 24,
-                decoration: BoxDecoration(
-                  color: statusColor.withValues(
-                      alpha: effectiveAlert ? 0.45 : 0.28),
-                  shape: BoxShape.circle,
-                  border: Border.all(
-                    color: statusColor,
-                    width: effectiveAlert ? 2.5 : 1.8,
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: statusColor.withValues(
-                          alpha: effectiveAlert ? 0.9 : 0.6),
-                      blurRadius: effectiveAlert ? 16 : 10,
-                      spreadRadius: effectiveAlert ? 3 : 1.5,
+              left: 88,
+              top: 44,
+              child: IgnorePointer(
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 250),
+                  width: 38,
+                  height: 38,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: RadialGradient(
+                      colors: [
+                        glowColor.withValues(alpha: effectiveAlert ? 0.55 : 0.40),
+                        Colors.transparent,
+                      ],
+                      stops: const [0.0, 1.0],
                     ),
-                  ],
-                ),
-                child: Center(
-                  child: Icon(
-                    effectiveAlert
-                        ? Icons.priority_high_rounded
-                        : Icons.warning_rounded,
-                    color: statusColor,
-                    size: effectiveAlert ? 16 : 14,
                   ),
                 ),
               ),
             ),
-
-            // ── Mode-Specific Warning / Alert Badge ──
-            Positioned(
-              left: 126,
-              top: 52,
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.82),
-                  borderRadius: BorderRadius.circular(4),
-                  border: Border.all(color: statusColor, width: 1.2),
-                  boxShadow: [
-                    BoxShadow(
-                      color: statusColor.withValues(alpha: 0.4),
-                      blurRadius: 6,
-                    ),
-                  ],
-                ),
-                child: Text(
-                  statusLabel,
-                  style: TextStyle(
-                    color: statusColor,
-                    fontSize: 8.5,
-                    fontWeight: FontWeight.w900,
-                    letterSpacing: 0.5,
-                  ),
-                ),
-              ),
-            ),
-          ],
         ],
       ),
     );

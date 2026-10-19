@@ -51,12 +51,14 @@ void main() {
       expect(find.textContaining('WARN'), findsNothing);
       expect(find.byIcon(Icons.priority_high_rounded), findsNothing);
       expect(find.byIcon(Icons.warning_rounded), findsNothing);
+      expect(find.byKey(const ValueKey('neck-glow-warning')), findsNothing);
+      expect(find.byKey(const ValueKey('neck-glow-alert')), findsNothing);
     });
 
     testWidgets('Thresholds and warnings vary strictly per mode at C7–T1 region',
         (tester) async {
       // 1. Focus Mode (10° threshold, 1s dwell)
-      // Angle 12° exceeds 10° -> Warning state
+      // Angle 12° exceeds 10° -> Orange warning glow while counting
       await tester.pumpWidget(
         const MaterialApp(
           home: Scaffold(
@@ -70,10 +72,11 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.text('WARN (1s)'), findsOneWidget);
-      expect(find.byIcon(Icons.warning_rounded), findsOneWidget);
+      expect(find.byKey(const ValueKey('neck-glow-warning')), findsOneWidget);
+      expect(find.byKey(const ValueKey('neck-glow-alert')), findsNothing);
+      expect(find.text('SLOUCH ALERT'), findsNothing);
 
-      // Focus Mode Slouch Alert
+      // Focus Mode Slouch Alert (time exceeded -> Red alert glow)
       await tester.pumpWidget(
         const MaterialApp(
           home: Scaffold(
@@ -87,11 +90,12 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.text('SLOUCH ALERT'), findsOneWidget);
-      expect(find.byIcon(Icons.priority_high_rounded), findsOneWidget);
+      expect(find.byKey(const ValueKey('neck-glow-alert')), findsOneWidget);
+      expect(find.byKey(const ValueKey('neck-glow-warning')), findsNothing);
+      expect(find.text('SLOUCH ALERT'), findsNothing);
 
       // 2. Leisure Mode (20° threshold, 3s dwell)
-      // Angle 18° is within 20° -> Optimal (no marker)!
+      // Angle 18° is within 20° -> Optimal (no glow)!
       await tester.pumpWidget(
         const MaterialApp(
           home: Scaffold(
@@ -104,10 +108,10 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.text('SLOUCH ALERT'), findsNothing);
-      expect(find.textContaining('WARN'), findsNothing);
+      expect(find.byKey(const ValueKey('neck-glow-warning')), findsNothing);
+      expect(find.byKey(const ValueKey('neck-glow-alert')), findsNothing);
 
-      // Leisure Mode at 22° in warning window -> Warning (3s)
+      // Leisure Mode at 22° in warning window -> Orange glow
       await tester.pumpWidget(
         const MaterialApp(
           home: Scaffold(
@@ -121,11 +125,11 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.text('WARN (3s)'), findsOneWidget);
-      expect(find.byIcon(Icons.warning_rounded), findsOneWidget);
+      expect(find.byKey(const ValueKey('neck-glow-warning')), findsOneWidget);
+      expect(find.byKey(const ValueKey('neck-glow-alert')), findsNothing);
 
       // 3. Commuting Mode (25° threshold, 5s dwell)
-      // Angle 22° is within 25° -> Optimal (no marker)!
+      // Angle 22° is within 25° -> Optimal (no glow)!
       await tester.pumpWidget(
         const MaterialApp(
           home: Scaffold(
@@ -138,10 +142,10 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.text('SLOUCH ALERT'), findsNothing);
-      expect(find.textContaining('WARN'), findsNothing);
+      expect(find.byKey(const ValueKey('neck-glow-warning')), findsNothing);
+      expect(find.byKey(const ValueKey('neck-glow-alert')), findsNothing);
 
-      // Commuting Mode at 27° in warning window -> Warning (5s)
+      // Commuting Mode at 27° in warning window -> Orange glow
       await tester.pumpWidget(
         const MaterialApp(
           home: Scaffold(
@@ -155,10 +159,10 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.text('WARN (5s)'), findsOneWidget);
-      expect(find.byIcon(Icons.warning_rounded), findsOneWidget);
+      expect(find.byKey(const ValueKey('neck-glow-warning')), findsOneWidget);
+      expect(find.byKey(const ValueKey('neck-glow-alert')), findsNothing);
 
-      // Commuting Mode critical alert
+      // Commuting Mode critical alert (dwell exceeded -> Red glow)
       await tester.pumpWidget(
         const MaterialApp(
           home: Scaffold(
@@ -172,8 +176,8 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.text('SLOUCH ALERT'), findsOneWidget);
-      expect(find.byIcon(Icons.priority_high_rounded), findsOneWidget);
+      expect(find.byKey(const ValueKey('neck-glow-alert')), findsOneWidget);
+      expect(find.byKey(const ValueKey('neck-glow-warning')), findsNothing);
     });
   });
 
