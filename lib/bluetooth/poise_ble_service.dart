@@ -824,12 +824,17 @@ class PoiseBleService {
   }
 
   void _applyCalibratedPitch(double rawAngle, {bool isHardwareDeviation = true}) {
-    _rawPitchAngle = rawAngle;
+    var angle = rawAngle;
+    if (angle.abs() > 180.0) {
+      angle = angle / 100.0;
+    }
+    angle = angle.clamp(-60.0, 60.0);
+    _rawPitchAngle = angle;
     // When received from physical POISE hardware over FFE1, the value is already the calibrated deviation.
     // If not hardware deviation (e.g. simulated drift before tare), subtract _zeroBaselineOffset.
     final calibratedAngle = isHardwareDeviation
-        ? rawAngle.clamp(-60.0, 60.0)
-        : (rawAngle - _zeroBaselineOffset).clamp(-60.0, 60.0);
+        ? angle
+        : (angle - _zeroBaselineOffset).clamp(-60.0, 60.0);
     _currentPitchAngle = calibratedAngle;
     _pitchAngleController.add(calibratedAngle);
   }
@@ -858,9 +863,11 @@ class PoiseBleService {
                 : [decoded]);
         for (final item in list) {
           if (item is Map) {
-            final pitch = (item['pitch'] as num?)?.toDouble() ??
+            var pitch = (item['pitch'] as num?)?.toDouble() ??
                 (item['angle'] as num?)?.toDouble() ??
                 0.0;
+            if (pitch.abs() > 180.0) pitch /= 100.0;
+            pitch = pitch.clamp(-60.0, 60.0);
             final dur = (item['duration'] as num?)?.toDouble() ??
                 (item['elapsed'] as num?)?.toDouble() ??
                 (item['session_seconds'] as num?)?.toDouble() ??
@@ -906,7 +913,9 @@ class PoiseBleService {
         final clean = payload.replaceFirst(RegExp(r'^(LFS:|LOG:)'), '').trim();
         final parts = clean.split(',');
         if (parts.length >= 2) {
-          final pitch = double.tryParse(parts[0]) ?? 0.0;
+          var pitch = double.tryParse(parts[0]) ?? 0.0;
+          if (pitch.abs() > 180.0) pitch /= 100.0;
+          pitch = pitch.clamp(-60.0, 60.0);
           final dur =
               parts.length > 1 ? (double.tryParse(parts[1]) ?? 1.0) : 1.0;
           final modeId = parts.length > 2 ? (int.tryParse(parts[2]) ?? 1) : 1;
@@ -989,10 +998,13 @@ class PoiseBleService {
   /// Calibrate zero baseline: sets the current angle as 0° (tare),
   /// and transmits a calibration command to the hardware if supported.
   Future<void> setZeroBaseline({double? baselinePitch}) async {
-    _zeroBaselineOffset = baselinePitch ??
+    var baseline = baselinePitch ??
         (_rawPitchAngle != 0.0
             ? _rawPitchAngle
             : (_currentPitchAngle + _zeroBaselineOffset));
+    if (baseline.abs() > 180.0) baseline /= 100.0;
+    baseline = baseline.clamp(-60.0, 60.0);
+    _zeroBaselineOffset = baseline;
     _currentPitchAngle =
         (_rawPitchAngle - _zeroBaselineOffset).clamp(-60.0, 60.0);
     _pitchAngleController.add(_currentPitchAngle);
@@ -1114,8 +1126,11 @@ class PoiseBleService {
 
   /// Emits a simulated pitch angle reading (useful for testing or manual simulation).
   void simulatePitchAngle(double angle) {
-    _rawPitchAngle = angle;
-    final calibrated = (angle - _zeroBaselineOffset).clamp(-60.0, 60.0);
+    var a = angle;
+    if (a.abs() > 180.0) a /= 100.0;
+    a = a.clamp(-60.0, 60.0);
+    _rawPitchAngle = a;
+    final calibrated = (a - _zeroBaselineOffset).clamp(-60.0, 60.0);
     _currentPitchAngle = calibrated;
     _pitchAngleController.add(calibrated);
   }

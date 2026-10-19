@@ -221,6 +221,38 @@ class PoiseLocalDatabase {
       }
       await batch.commit(noResult: true);
     }
+
+    // Auto-sanitize legacy or centidegree records where angles exceed anatomical bounds
+    try {
+      await db.execute('''
+        UPDATE sessions 
+        SET baseline_angle = baseline_angle / 100.0 
+        WHERE ABS(baseline_angle) > 180.0
+      ''');
+      await db.execute('''
+        UPDATE sessions 
+        SET baseline_angle = CASE 
+          WHEN baseline_angle > 60.0 THEN 60.0 
+          WHEN baseline_angle < -60.0 THEN -60.0 
+          ELSE baseline_angle 
+        END 
+        WHERE ABS(baseline_angle) > 60.0
+      ''');
+      await db.execute('''
+        UPDATE posture_events 
+        SET tilt_angle = tilt_angle / 100.0 
+        WHERE ABS(tilt_angle) > 180.0
+      ''');
+      await db.execute('''
+        UPDATE posture_events 
+        SET tilt_angle = CASE 
+          WHEN tilt_angle > 60.0 THEN 60.0 
+          WHEN tilt_angle < -60.0 THEN -60.0 
+          ELSE tilt_angle 
+        END 
+        WHERE ABS(tilt_angle) > 60.0
+      ''');
+    } catch (_) {}
   }
 
   // ===========================================================================
@@ -343,10 +375,13 @@ class PoiseLocalDatabase {
       },
       conflictAlgorithm: ConflictAlgorithm.ignore,
     );
-    final sessionToInsert =
-        (session.deviceId == null || session.deviceId!.trim().isEmpty)
-            ? session.copyWith(deviceId: effectiveDeviceId)
-            : session;
+    var baseline = session.baselineAngle;
+    if (baseline.abs() > 180.0) baseline /= 100.0;
+    baseline = baseline.clamp(-60.0, 60.0);
+    final sessionToInsert = session.copyWith(
+      deviceId: effectiveDeviceId,
+      baselineAngle: baseline,
+    );
     await db.insert(
       'sessions',
       sessionToInsert.toLocalMap(),
@@ -528,9 +563,13 @@ class PoiseLocalDatabase {
       },
       conflictAlgorithm: ConflictAlgorithm.ignore,
     );
+    var angle = event.tiltAngle;
+    if (angle.abs() > 180.0) angle /= 100.0;
+    angle = angle.clamp(-60.0, 60.0);
+    final sanitizedEvent = event.copyWith(tiltAngle: angle);
     await db.insert(
       'posture_events',
-      event.toLocalMap(),
+      sanitizedEvent.toLocalMap(),
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
     notifyDatabaseChanged();
@@ -545,6 +584,10 @@ class PoiseLocalDatabase {
     final db = await database;
     final batch = db.batch();
     for (final event in events) {
+      var angle = event.tiltAngle;
+      if (angle.abs() > 180.0) angle /= 100.0;
+      angle = angle.clamp(-60.0, 60.0);
+      final sanitizedEvent = event.copyWith(tiltAngle: angle);
       batch.insert(
         'profiles',
         {
@@ -569,7 +612,7 @@ class PoiseLocalDatabase {
       );
       batch.insert(
         'posture_events',
-        event.toLocalMap(),
+        sanitizedEvent.toLocalMap(),
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
     }
@@ -807,14 +850,18 @@ class PoiseLocalDatabase {
 
       final modeId = sRow['mode_id'] as int? ?? 1;
       final mode = ModeModel.activityModeFromId(modeId);
-      final baselineAngle =
+      var baselineAngle =
           (sRow['baseline_angle'] as num?)?.toDouble() ?? 0.0;
+      if (baselineAngle.abs() > 180.0) baselineAngle /= 100.0;
+      baselineAngle = baselineAngle.clamp(-60.0, 60.0);
       final sEvents = eventsBySession[sRow['id'] as String] ?? [];
 
       // Filter and sort slouch events within this session
       final slouchEvents = <Map<String, Object?>>[];
       for (final e in sEvents) {
-        final pitch = (e['tilt_angle'] as num?)?.toDouble() ?? 0.0;
+        var pitch = (e['tilt_angle'] as num?)?.toDouble() ?? 0.0;
+        if (pitch.abs() > 180.0) pitch /= 100.0;
+        pitch = pitch.clamp(-60.0, 60.0);
         final feedback = (e['feedback_triggered'] as int? ?? 0) == 1;
         final isSlouch = feedback || pitch.abs() >= mode.angle;
         if (isSlouch) {
@@ -832,7 +879,9 @@ class PoiseLocalDatabase {
             : null;
         final corrSec = (e['correction_time_sec'] as num?)?.toDouble() ??
             (e['duration_sec'] as num?)?.toDouble();
-        final pitch = (e['tilt_angle'] as num?)?.toDouble() ?? mode.angle.toDouble();
+        var pitch = (e['tilt_angle'] as num?)?.toDouble() ?? mode.angle.toDouble();
+        if (pitch.abs() > 180.0) pitch /= 100.0;
+        pitch = pitch.clamp(-60.0, 60.0);
         final feedback = (e['feedback_triggered'] as int? ?? 0) == 1;
         final slouchDur =
             (corrSec?.round() ?? 1) > 0 ? (corrSec?.round() ?? 1) : 1;
@@ -907,7 +956,9 @@ class PoiseLocalDatabase {
       final correctionTimeSec =
           (row['correction_time_sec'] as num?)?.toDouble() ??
               (row['duration_sec'] as num?)?.toDouble();
-      final pitch = (row['tilt_angle'] as num?)?.toDouble() ?? 0.0;
+      var pitch = (row['tilt_angle'] as num?)?.toDouble() ?? 0.0;
+      if (pitch.abs() > 180.0) pitch /= 100.0;
+      pitch = pitch.clamp(-60.0, 60.0);
       final seconds = (correctionTimeSec?.round() ?? 1) > 0
           ? (correctionTimeSec?.round() ?? 1)
           : 1;

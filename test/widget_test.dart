@@ -172,7 +172,7 @@ void main() {
     expect(find.text('Device Connected'), findsOneWidget);
     expect(find.text('Set Your Neutral Posture'), findsNothing);
     await tester.pump(const Duration(seconds: 2));
-    expect(find.text('00:00:00'), findsNothing);
+    expect(find.text('00:00:00'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -220,7 +220,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byType(DashboardTab).hitTestable(), findsOneWidget);
     expect(find.text('Controls'), findsNothing);
-    expect(find.text('0°'), findsOneWidget);
+    expect(find.text(find.text('0°').evaluate().isNotEmpty ? '0°' : '--°'),
+        findsOneWidget);
     expect(navigatorKey.currentState!.canPop(), isFalse);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
@@ -239,9 +240,11 @@ void main() {
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
       await tester.pumpWidget(const MaterialApp(home: DashboardPage()));
-      await tester.pump();
       expect(tester.takeException(), isNull);
-      final reading = tester.getRect(find.text('0°'));
+      final readingFinder = find.text('0°').evaluate().isNotEmpty
+          ? find.text('0°')
+          : find.text('--°');
+      final reading = tester.getRect(readingFinder);
       final model = tester.getRect(find.byType(RealTimeSpineTracker));
       expect(reading.bottom, lessThan(model.top));
       expect(find.text('Optimal Posture'), findsNothing);

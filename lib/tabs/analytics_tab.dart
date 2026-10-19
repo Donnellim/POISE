@@ -1004,7 +1004,7 @@ class _SessionSummaryCard extends StatelessWidget {
               Expanded(
                 child: _MetricItem(
                   label: 'Average Deviation',
-                  value: summary.records.isEmpty
+                  value: summary.records.isEmpty || summary.totalSeconds == 0
                       ? '—'
                       : '${avgDev.toStringAsFixed(1)}°',
                   caption: 'Mean absolute tilt',
@@ -1013,7 +1013,7 @@ class _SessionSummaryCard extends StatelessWidget {
               Expanded(
                 child: _MetricItem(
                   label: 'Peak Deviation',
-                  value: summary.records.isEmpty
+                  value: summary.records.isEmpty || summary.totalSeconds == 0
                       ? '—'
                       : '${maxDev.toStringAsFixed(1)}°',
                   caption: 'Maximum recorded tilt',
@@ -1027,7 +1027,7 @@ class _SessionSummaryCard extends StatelessWidget {
               Expanded(
                 child: _MetricItem(
                   label: 'Time-in-Zone',
-                  value: summary.records.isEmpty
+                  value: summary.records.isEmpty || summary.totalSeconds == 0
                       ? '—'
                       : '${inZone.toStringAsFixed(1)}%',
                   caption: 'Time within threshold',
@@ -1036,7 +1036,7 @@ class _SessionSummaryCard extends StatelessWidget {
               Expanded(
                 child: _MetricItem(
                   label: 'Event Frequency',
-                  value: summary.records.isEmpty
+                  value: summary.records.isEmpty || summary.totalSeconds == 0
                       ? '—'
                       : '${freq.toStringAsFixed(1)}/hr',
                   caption: 'Warning events per hour',

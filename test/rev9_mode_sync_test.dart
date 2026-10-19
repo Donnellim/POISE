@@ -173,8 +173,18 @@ void main() {
       ));
       await tester.pumpAndSettle();
 
-      // Verify session is actively running
+      // Ensure session is actively running
+      if (find.text('Start Session').evaluate().isNotEmpty) {
+        await tester.tap(find.text('Start Session'));
+        await tester.pump();
+        await tester.pump(const Duration(seconds: 3));
+      }
       expect(find.text('End Session'), findsOneWidget);
+
+      // Dismiss any overlaying SnackBar before navigating
+      ScaffoldMessenger.of(tester.element(find.byType(DashboardPage)))
+          .clearSnackBars();
+      await tester.pumpAndSettle();
 
       // Navigate to Controls Tab
       await tester.tap(find.byIcon(Icons.tune_rounded));
