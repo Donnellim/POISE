@@ -24,7 +24,7 @@ class PostureRecord {
   const PostureRecord({
     required this.at,
     required this.seconds,
-    required this.pitch,
+    required double pitch,
     required this.mode,
     this.slouchEvents = 0,
     this.warnings = 0,
@@ -33,9 +33,24 @@ class PostureRecord {
     this.eventId,
     this.sessionId,
     this.userId,
-    this.baselineAngle,
+    double? baselineAngle,
     this.feedbackTriggered,
-  });
+  })  : pitch = (pitch > 180.0 || pitch < -180.0)
+            ? ((pitch / 100.0) > 60.0
+                ? 60.0
+                : ((pitch / 100.0) < -60.0 ? -60.0 : (pitch / 100.0)))
+            : (pitch > 60.0 ? 60.0 : (pitch < -60.0 ? -60.0 : pitch)),
+        baselineAngle = baselineAngle == null
+            ? null
+            : ((baselineAngle > 180.0 || baselineAngle < -180.0)
+                ? ((baselineAngle / 100.0) > 60.0
+                    ? 60.0
+                    : ((baselineAngle / 100.0) < -60.0
+                        ? -60.0
+                        : (baselineAngle / 100.0)))
+                : (baselineAngle > 60.0
+                    ? 60.0
+                    : (baselineAngle < -60.0 ? -60.0 : baselineAngle)));
 
   final DateTime at;
   final DateTime? correctedAt;
@@ -50,6 +65,17 @@ class PostureRecord {
   final String? userId;
   final double? baselineAngle;
   final bool? feedbackTriggered;
+
+  static double sanitizeAngle(double raw) {
+    if (!raw.isFinite) return 0.0;
+    var a = raw;
+    // Normalize centidegrees (e.g. 3141.0 -> 31.41°, 565.7 -> 5.66°)
+    if (a.abs() > 180.0) {
+      a /= 100.0;
+    }
+    // Clamp to physiological cervical/sagittal posture range [-60.0, 60.0]
+    return a.clamp(-60.0, 60.0);
+  }
 
   bool get slouched => pitch.abs() >= mode.angle;
   bool get valid =>
@@ -93,22 +119,34 @@ class AnalyticsSummary {
   double get averageAbsoluteDeviation {
     final secs = records.fold(0, (sum, r) => sum + r.seconds);
     if (secs == 0) return 0.0;
-    return records.fold(0.0, (sum, r) => sum + r.pitch.abs() * r.seconds) / secs;
+    final weightedSum = records.fold(
+        0.0,
+        (sum, r) =>
+            sum + PostureRecord.sanitizeAngle(r.pitch).abs() * r.seconds);
+    return (weightedSum / secs).clamp(0.0, 60.0);
   }
 
   double get maxAbsoluteDeviation {
     if (records.isEmpty) return 0.0;
-    return records.map((r) => r.pitch.abs()).reduce(math.max);
+    final maxVal = records
+        .map((r) => PostureRecord.sanitizeAngle(r.pitch).abs())
+        .reduce(math.max);
+    return maxVal.clamp(0.0, 60.0);
   }
 
   double get timeInZonePercentage {
     if (totalSeconds == 0) return 100.0;
-    return (neutralSeconds / totalSeconds) * 100.0;
+    return ((neutralSeconds / totalSeconds) * 100.0).clamp(0.0, 100.0);
   }
 
   double get hourlyEventFrequency {
     if (totalSeconds == 0) return 0.0;
-    return (totalSlouchEvents / (totalSeconds / 3600.0));
+    // Guard against small-sample duration explosion (e.g. 32 events in 2 minutes producing 689.8/hr).
+    // Bound the normalizing window to at least 1 hour (3600 seconds) if wear duration is under 1 hr,
+    // and clamp to a physiologically realistic upper bound of 60.0 events per hour.
+    final effectiveHours = math.max(totalSeconds / 3600.0, 1.0);
+    final rate = totalSlouchEvents / effectiveHours;
+    return rate.clamp(0.0, 60.0);
   }
 
   int get bucketCount => period == AnalyticsPeriod.today ? 12 : 7;
@@ -134,8 +172,13 @@ class AnalyticsSummary {
     final seconds = items.fold(0, (sum, r) => sum + r.seconds);
     return seconds == 0
         ? null
-        : items.fold(0.0, (sum, r) => sum + r.pitch.abs() * r.seconds) /
-            seconds;
+        : (items.fold(
+                    0.0,
+                    (sum, r) =>
+                        sum +
+                        PostureRecord.sanitizeAngle(r.pitch).abs() * r.seconds) /
+                seconds)
+            .clamp(0.0, 60.0);
   }
 
   String csv({required bool sample}) {

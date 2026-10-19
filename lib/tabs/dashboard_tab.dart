@@ -3,6 +3,8 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../activity_mode.dart';
 import '../widgets/poise_app_bar.dart';
+import '../widgets/real_time_spine_tracker.dart';
+export '../widgets/real_time_spine_tracker.dart' show RealTimeSpineTracker;
 import '../bluetooth/poise_ble_service.dart';
 import '../notifications/notification_center.dart';
 import '../database/local_database.dart';
@@ -52,30 +54,27 @@ class _DashboardTabState extends State<DashboardTab> {
   DateTime? _activeSlouchStartTime;
   double _peakSlouchAngle = 0.0;
 
+  bool get _isSlouchActive =>
+      _isSessionRunning &&
+      !_isSessionPaused &&
+      _livePostureAngle != null &&
+      _livePostureAngle!.abs() > widget.activeMode.angle;
+
   bool get _isSlouchAlert {
-    if (_livePostureAngle == null || !_isSessionRunning || _isSessionPaused) {
-      return false;
-    }
-    final absAngle = _livePostureAngle!.abs();
-    final threshold = widget.activeMode.angle.toDouble();
-    if (absAngle <= threshold) return false;
-    if (absAngle > threshold + 8.0) return true;
-    if (_activeSlouchStartTime != null) {
-      final elapsedSec =
-          DateTime.now().difference(_activeSlouchStartTime!).inMilliseconds /
-              1000.0;
-      return elapsedSec >= widget.activeMode.seconds;
-    }
-    return false;
+    if (!_isSlouchActive) return false;
+    final angle = _livePostureAngle!.abs();
+    // Severe posture deviation triggers critical alert immediately
+    if (angle > widget.activeMode.angle + 8.0) return true;
+    if (_activeSlouchStartTime == null) return false;
+    final elapsedSec =
+        DateTime.now().difference(_activeSlouchStartTime!).inMilliseconds /
+            1000.0;
+    return elapsedSec >= widget.activeMode.seconds;
   }
 
   bool get _isSlouchWarning {
-    if (_livePostureAngle == null || !_isSessionRunning || _isSessionPaused) {
-      return false;
-    }
-    final absAngle = _livePostureAngle!.abs();
-    final threshold = widget.activeMode.angle.toDouble();
-    return absAngle > threshold && !_isSlouchAlert;
+    if (!_isSlouchActive) return false;
+    return !_isSlouchAlert;
   }
 
   // ── 5. Session Elapsed Timer & Controls ──
@@ -104,6 +103,7 @@ class _DashboardTabState extends State<DashboardTab> {
           _isCalibrated = true;
           _livePostureAngle = PoiseBleService.instance.currentPitchAngle;
         });
+        _startTimer();
         await _ensureActiveSessionStarted();
         return;
       }
@@ -122,17 +122,29 @@ class _DashboardTabState extends State<DashboardTab> {
             _isCalibrated = true;
             _livePostureAngle = PoiseBleService.instance.currentPitchAngle;
           });
+          _startTimer();
         }
         return;
       }
 
-      // 3. When session is not currently running, sync Session Elapsed display with today's wear time
-      // so the user sees their wear time reflecting 1:1 with Analytics
-      final todaySec =
-          await PoiseLocalDatabase.instance.getTodayTotalWearSeconds();
-      if (todaySec > 0 && mounted && !_isSessionRunning) {
+      // 3. Restore calibration state established at startup or calibration page
+      final prefs = await SharedPreferences.getInstance();
+      if ((prefs.getBool('poise.isCalibrated') == true ||
+              prefs.containsKey('poise.baseline')) &&
+          mounted) {
         setState(() {
-          _sessionSeconds = todaySec;
+          _isCalibrated = true;
+          if (_isBluetoothConnected) {
+            _livePostureAngle = PoiseBleService.instance.currentPitchAngle;
+          }
+        });
+      }
+
+      // 4. When session is not currently running, timer remains strictly 00:00:00.
+      // Total wear time is accurately tracked and displayed in the Analytics tab.
+      if (mounted && !_isSessionRunning) {
+        setState(() {
+          _sessionSeconds = 0;
         });
       }
     } catch (_) {}
@@ -149,7 +161,10 @@ class _DashboardTabState extends State<DashboardTab> {
       final deviceId = prefs.getString('poise.deviceId') ?? 'POISE-DEVICE';
       final now = DateTime.now();
 
-      _sessionBaselineAngle = baselineAngle ?? _sessionBaselineAngle;
+      var base = baselineAngle ?? _sessionBaselineAngle;
+      if (base.abs() > 180.0) base /= 100.0;
+      base = base.clamp(-60.0, 60.0);
+      _sessionBaselineAngle = base;
       _currentSessionId = 'sess_${now.millisecondsSinceEpoch}';
       final startedAt = now.subtract(Duration(seconds: _sessionSeconds));
       await PoiseLocalDatabase.instance.insertSession(
@@ -167,7 +182,8 @@ class _DashboardTabState extends State<DashboardTab> {
 
       if (_isCloudSynced &&
           user != null &&
-          NetworkService.instance.isConnected) {
+          NetworkService.instance.isConnected &&
+          !PoiseBleService.instance.isTesting) {
         unawaited(SyncService.instance.syncToCloud());
       }
     } catch (_) {}
@@ -178,8 +194,11 @@ class _DashboardTabState extends State<DashboardTab> {
 
     // One calibration per session: tare zero baseline to current sensor angle
     final currentRaw = PoiseBleService.instance.rawPitchAngle;
-    _sessionBaselineAngle = currentRaw;
-    await PoiseBleService.instance.setZeroBaseline(baselinePitch: currentRaw);
+    var base = currentRaw;
+    if (base.abs() > 180.0) base /= 100.0;
+    base = base.clamp(-60.0, 60.0);
+    _sessionBaselineAngle = base;
+    await PoiseBleService.instance.setZeroBaseline(baselinePitch: base);
 
     if (!fromHardware) {
       await PoiseBleService.instance.sendSessionCommand('SESSION:START');
@@ -292,15 +311,13 @@ class _DashboardTabState extends State<DashboardTab> {
 
     _closeCurrentSession();
 
-    final todaySec =
-        await PoiseLocalDatabase.instance.getTodayTotalWearSeconds();
-
+    _sessionTimer?.cancel();
     if (mounted) {
       setState(() {
         _isSessionRunning = false;
         _isSessionPaused = false;
         _livePostureAngle = null; // Clear live posture reading
-        _sessionSeconds = todaySec > 0 ? todaySec : _sessionSeconds;
+        _sessionSeconds = 0; // Inactive session timer resets strictly to 00:00:00
       });
     }
 
@@ -389,7 +406,8 @@ class _DashboardTabState extends State<DashboardTab> {
         unawaited(PoiseLocalDatabase.instance.endSession(sId, DateTime.now()));
         if (_isCloudSynced &&
             SocialAuth.instance.user != null &&
-            NetworkService.instance.isConnected) {
+            NetworkService.instance.isConnected &&
+            !PoiseBleService.instance.isTesting) {
           unawaited(SyncService.instance.syncToCloud());
         }
       }
@@ -404,12 +422,10 @@ class _DashboardTabState extends State<DashboardTab> {
     NetworkService.instance.isConnectedNotifier
         .addListener(_onNetworkStatusChanged);
     SyncService.instance.status.addListener(_onSyncStatusChanged);
-    unawaited(SyncService.instance.restoreFromCloud());
-    _sessionBaselineAngle = PoiseBleService.instance.zeroBaselineOffset;
-    if (PoiseBleService.instance.isTesting) {
-      _isSessionRunning = true;
-      _livePostureAngle = 0.0;
+    if (!PoiseBleService.instance.isTesting) {
+      unawaited(SyncService.instance.restoreFromCloud());
     }
+    _sessionBaselineAngle = PoiseBleService.instance.zeroBaselineOffset;
     if (widget.isBluetoothConnected != null) {
       _isBluetoothConnected = widget.isBluetoothConnected!;
       if (!_isBluetoothConnected) {
@@ -417,7 +433,9 @@ class _DashboardTabState extends State<DashboardTab> {
         _livePostureAngle = null;
       }
     }
-    _startTimer();
+    if (_isSessionRunning) {
+      _startTimer();
+    }
     _syncActiveSessionWithDeviceAndDatabase();
 
     _batteryLevel = PoiseBleService.instance.batteryLevel;
@@ -437,6 +455,9 @@ class _DashboardTabState extends State<DashboardTab> {
           _isSessionRunning = true;
           _isCalibrated = true;
         });
+        if (_sessionTimer == null || !_sessionTimer!.isActive) {
+          _startTimer();
+        }
         if (_currentSessionId != null) {
           unawaited(PoiseLocalDatabase.instance.updateSessionProgress(
             _currentSessionId!,
@@ -484,10 +505,18 @@ class _DashboardTabState extends State<DashboardTab> {
             final now = DateTime.now();
 
             if (isSlouched) {
+              final clampedAngle = angle.clamp(-60.0, 60.0);
               if (_activeSlouchStartTime == null) {
                 // Posture deviation detected: start tracking duration and peak angle
                 _activeSlouchStartTime = now;
-                _peakSlouchAngle = angle;
+                _peakSlouchAngle = clampedAngle;
+
+                if (_lastAlertNotificationTime == null ||
+                    now.difference(_lastAlertNotificationTime!) >
+                        const Duration(seconds: 15)) {
+                  _lastAlertNotificationTime = now;
+                  NotificationScope.of(context)?.add(PoiseNoticeType.alert);
+                }
 
                 if (_currentSessionId == null) {
                   _currentSessionId = 'sess_${now.millisecondsSinceEpoch}';
@@ -495,21 +524,8 @@ class _DashboardTabState extends State<DashboardTab> {
                 }
               } else {
                 // Slouch is continuing: track the peak slouch angle
-                if (angle.abs() > _peakSlouchAngle.abs()) {
-                  _peakSlouchAngle = angle;
-                }
-              }
-
-              final elapsedSec =
-                  now.difference(_activeSlouchStartTime!).inMilliseconds / 1000.0;
-              // Trigger feedback alert notification once forgiveness time has elapsed or tilt is severe
-              if (elapsedSec >= widget.activeMode.seconds ||
-                  angle.abs() > widget.activeMode.angle + 8.0) {
-                if (_lastAlertNotificationTime == null ||
-                    now.difference(_lastAlertNotificationTime!) >
-                        const Duration(seconds: 15)) {
-                  _lastAlertNotificationTime = now;
-                  NotificationScope.of(context)?.add(PoiseNoticeType.alert);
+                if (clampedAngle.abs() > _peakSlouchAngle.abs()) {
+                  _peakSlouchAngle = clampedAngle;
                 }
               }
             } else {
@@ -551,7 +567,8 @@ class _DashboardTabState extends State<DashboardTab> {
                 // Real-time cloud sync: immediately sync the completed event
                 if (_isCloudSynced &&
                     SocialAuth.instance.user != null &&
-                    NetworkService.instance.isConnected) {
+                    NetworkService.instance.isConnected &&
+                    !PoiseBleService.instance.isTesting) {
                   unawaited(SyncService.instance.syncToCloud());
                 }
               }
@@ -657,7 +674,7 @@ class _DashboardTabState extends State<DashboardTab> {
   }
 
   String _formatDuration(int totalSeconds) {
-    if (!_canMonitor) return '00:00:00';
+    if (!_canMonitor || !_isSessionRunning) return '00:00:00';
     final int hours = totalSeconds ~/ 3600;
     final int minutes = (totalSeconds % 3600) ~/ 60;
     final int seconds = totalSeconds % 60;
@@ -1685,8 +1702,6 @@ class _DashboardTabState extends State<DashboardTab> {
                         angle: hasReading ? _livePostureAngle! : 0.0,
                         isConnected: hasReading,
                         activeMode: widget.activeMode,
-                        isSlouchAlert: _isSlouchAlert,
-                        isSlouchWarning: _isSlouchWarning,
                       ),
                     ),
 
@@ -1698,11 +1713,17 @@ class _DashboardTabState extends State<DashboardTab> {
                         children: [
                           Text(
                             displayAngle,
-                            style: const TextStyle(
-                              color: Colors.white,
+                            style: TextStyle(
+                              color: !hasReading
+                                  ? Colors.white
+                                  : (_livePostureAngle!.abs() > widget.activeMode.angle + 5.0
+                                      ? const Color(0xFFFF1744)
+                                      : (_livePostureAngle!.abs() > widget.activeMode.angle
+                                          ? const Color(0xFFFFB300)
+                                          : const Color(0xFF00E676))),
                               fontSize: 28,
                               fontWeight: FontWeight.w900,
-                              shadows: [
+                              shadows: const [
                                 Shadow(
                                     color: Colors.black38,
                                     offset: Offset(0, 2),
@@ -1734,7 +1755,7 @@ class _DashboardTabState extends State<DashboardTab> {
                       ),
                     ),
 
-                    // 3. Real-Time Dynamic 3D Holographic Spine & Posture Model
+                    // 3. Real-Time Static 2D Sagittal Spine Model Tracker
                     Positioned(
                       bottom: 0,
                       child: RealTimeSpineTracker(
@@ -1764,14 +1785,40 @@ class _DashboardTabState extends State<DashboardTab> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
-                'CURRENT MODE',
-                style: TextStyle(
-                  color: Colors.black87,
-                  fontSize: 14,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 0.5,
-                ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'CURRENT MODE',
+                    style: TextStyle(
+                      color: Colors.black87,
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                  Flexible(
+                    child: Text(
+                      _canMonitor
+                          ? (PoiseBleService.instance.isModeSynchronized
+                              ? 'Hardware Synced'
+                              : 'Syncing Mode...')
+                          : 'Saved: ${widget.activeMode.label}',
+                      style: TextStyle(
+                        color: _canMonitor
+                            ? (PoiseBleService.instance.isModeSynchronized
+                                ? const Color(0xFF1B5E20)
+                                : Colors.orange[900])
+                            : Colors.black54,
+                        fontSize: 9.5,
+                        fontWeight: FontWeight.bold,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.right,
+                    ),
+                  ),
+                ],
               ),
               const SizedBox(height: 8),
               IntrinsicHeight(
@@ -1825,18 +1872,6 @@ class _DashboardTabState extends State<DashboardTab> {
                                           color: Colors.black,
                                           fontSize: 15,
                                           fontWeight: FontWeight.bold),
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                    const SizedBox(height: 2),
-                                    Text(
-                                      _isBluetoothConnected
-                                          ? 'Hardware Synced'
-                                          : 'Saved: ${widget.activeMode.label}',
-                                      style: const TextStyle(
-                                          color: Colors.black54,
-                                          fontSize: 7.5,
-                                          fontWeight: FontWeight.w600),
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
                                     ),
@@ -2057,15 +2092,11 @@ class _SpeedometerGaugePainter extends CustomPainter {
   final double angle;
   final bool isConnected;
   final ActivityMode activeMode;
-  final bool isSlouchAlert;
-  final bool isSlouchWarning;
 
   _SpeedometerGaugePainter({
     required this.angle,
     required this.isConnected,
     this.activeMode = ActivityMode.normal,
-    this.isSlouchAlert = false,
-    this.isSlouchWarning = false,
   });
 
   @override
@@ -2073,7 +2104,7 @@ class _SpeedometerGaugePainter extends CustomPainter {
     final center = Offset(size.width / 2, 158);
     final radius = size.width * 0.38;
 
-    // Symmetrical Arc: Starts at 160° and sweeps 220° (Ends at 380° / 20°)
+    // Symmetrical Arc: Starts at 170° and sweeps 200° (Ends at 370° / 10°)
     const startAngle = 170.0 * math.pi / 180.0;
     const sweepAngle = 200.0 * math.pi / 180.0;
 
@@ -2087,39 +2118,58 @@ class _SpeedometerGaugePainter extends CustomPainter {
       ..strokeCap = StrokeCap.round;
     canvas.drawArc(rect, startAngle, sweepAngle, false, bgPaint);
 
-    // 2. Color Gradient Arc (Dynamic per ActivityMode threshold)
+    // 2. Mode-Adaptive Color Gradient Arc (Acceptance Zone -> Warning Dwell -> Critical Red)
+    // Dynamic stops adjust per mode threshold:
+    // Focus (10°): Narrow green acceptance, red covers most of the outer arch
+    // Normal (15°): Balanced 15° acceptance zone
+    // Leisure (20°): Relaxed 20° acceptance zone
+    // Commuting (25°): Wide 25° acceptance zone, red only at outer edges
     canvas.save();
     canvas.translate(center.dx, center.dy);
     canvas.rotate(startAngle);
 
     final double threshold = activeMode.angle.toDouble();
-    final double tThreshPos = (0.5 + (threshold / 120.0)).clamp(0.5, 0.95);
-    final double tWarnPos =
-        (0.5 + ((threshold + 6.0) / 120.0)).clamp(tThreshPos, 0.98);
 
-    final double tThreshNeg = (0.5 - (threshold / 120.0)).clamp(0.05, 0.5);
-    final double tWarnNeg =
-        (0.5 - ((threshold + 6.0) / 120.0)).clamp(0.02, tThreshNeg);
+    // Normalize angle to [0.0, 1.0] along the 120° dial span [-60°, +60°]
+    double toNormalizedT(double deg) => ((deg + 60.0) / 120.0).clamp(0.0, 1.0);
+
+    final double tMinusRed = toNormalizedT(-threshold - 5.0);
+    final double tMinusOrange = toNormalizedT(-threshold - 2.5);
+    final double tMinusWarn = toNormalizedT(-threshold);
+    final double tMinusGreen = toNormalizedT(-threshold + 2.0);
+
+    final double tPlusGreen = toNormalizedT(threshold - 2.0);
+    final double tPlusWarn = toNormalizedT(threshold);
+    final double tPlusOrange = toNormalizedT(threshold + 2.5);
+    final double tPlusRed = toNormalizedT(threshold + 5.0);
 
     final sweepGradient = SweepGradient(
       startAngle: 0.0,
       endAngle: sweepAngle,
       colors: const [
-        Color(0xFFFF1744), // Red (-60°)
-        Color(0xFFFF9100), // Orange/Amber
-        Color(0xFF00E676), // Green (-threshold)
-        Color(0xFF00E5FF), // Cyan (0° Neutral)
-        Color(0xFF00E676), // Green (+threshold)
-        Color(0xFFFF9100), // Orange/Amber (+threshold + 6°)
-        Color(0xFFFF1744), // Red (+60°)
+        Color(0xFFFF1744), // Critical Red (-60°)
+        Color(0xFFFF1744), // Critical Red (past threshold + 5°)
+        Color(0xFFFF9100), // Orange Warning
+        Color(0xFFFFEA00), // Yellow Threshold
+        Color(0xFF00E676), // Bright Green Acceptance
+        Color(0xFF00E676), // Optimal Center (0°)
+        Color(0xFF00E676), // Bright Green Acceptance
+        Color(0xFFFFEA00), // Yellow Threshold
+        Color(0xFFFF9100), // Orange Warning
+        Color(0xFFFF1744), // Critical Red (past threshold + 5°)
+        Color(0xFFFF1744), // Critical Red (+60°)
       ],
       stops: [
         0.0,
-        tWarnNeg,
-        tThreshNeg,
-        0.50,
-        tThreshPos,
-        tWarnPos,
+        tMinusRed.clamp(0.01, 0.45),
+        tMinusOrange.clamp(0.02, 0.46),
+        tMinusWarn.clamp(0.03, 0.47),
+        tMinusGreen.clamp(0.04, 0.48),
+        0.50, // 0° center baseline
+        tPlusGreen.clamp(0.52, 0.96),
+        tPlusWarn.clamp(0.53, 0.97),
+        tPlusOrange.clamp(0.54, 0.98),
+        tPlusRed.clamp(0.55, 0.99),
         1.0,
       ],
     );
@@ -2144,7 +2194,7 @@ class _SpeedometerGaugePainter extends CustomPainter {
           startAngle, sweepAngle, false, gridPaint);
     }
 
-    // 3. Ticks & Degree Labels
+    // 3. Ticks & Degree Labels with Mode-Adaptive Colors
     final tickPaint = Paint()
       ..color = Colors.black87
       ..strokeWidth = 0.65;
@@ -2167,17 +2217,14 @@ class _SpeedometerGaugePainter extends CustomPainter {
       canvas.drawLine(p1, p2, tickPaint);
 
       if (isMajor) {
-        Color labelColor = Colors.black87;
-        if (deg == -60) {
-          labelColor = const Color(0xFF00E676);
-        } else if (deg == -30) {
-          labelColor = const Color(0xFF76FF03);
-        } else if (deg == 0) {
-          labelColor = const Color(0xFFFFD600);
-        } else if (deg == 30) {
-          labelColor = const Color(0xFFFF9100);
-        } else if (deg == 60) {
-          labelColor = const Color(0xFFFF1744);
+        final double absDeg = deg.abs().toDouble();
+        Color labelColor;
+        if (absDeg <= threshold) {
+          labelColor = const Color(0xFF00E676); // Within mode acceptance: Green
+        } else if (absDeg <= threshold + 5.0) {
+          labelColor = const Color(0xFFFFEA00); // Warning dwell: Yellow
+        } else {
+          labelColor = const Color(0xFFFF1744); // Slouch / Alert: Red
         }
 
         final textSpan = TextSpan(
@@ -2208,22 +2255,13 @@ class _SpeedometerGaugePainter extends CustomPainter {
     final double needleT = (needleDeg + 60.0) / 120.0;
     final double needleRad = startAngle + needleT * sweepAngle;
 
-    Color needleColor = Colors.white;
-    if (isConnected) {
-      if (isSlouchAlert) {
-        needleColor = const Color(0xFFFF1744); // Critical Slouch: Neon Red
-      } else if (isSlouchWarning) {
-        needleColor = const Color(0xFFFFB300); // Forgiveness Window: Amber
-      }
-    }
-
     final shadowPaint = Paint()
       ..color = Colors.black38
       ..strokeWidth = 5.0
       ..strokeCap = StrokeCap.round;
 
     final needlePaint = Paint()
-      ..color = needleColor
+      ..color = Colors.white
       ..strokeWidth = 3.5
       ..strokeCap = StrokeCap.round;
 
@@ -2240,454 +2278,22 @@ class _SpeedometerGaugePainter extends CustomPainter {
         pStart + const Offset(1, 2), pEnd + const Offset(1, 2), shadowPaint);
     canvas.drawLine(pStart, pEnd, needlePaint);
 
-    canvas.drawCircle(pEnd, 4, Paint()..color = needleColor);
+    final double absNeedle = needleDeg.abs();
+    final Color needleTipColor = !isConnected
+        ? Colors.white
+        : absNeedle <= threshold
+            ? const Color(0xFF00E676)
+            : (absNeedle <= threshold + 5.0
+                ? const Color(0xFFFFEA00)
+                : const Color(0xFFFF1744));
+
+    canvas.drawCircle(pEnd, 4, Paint()..color = needleTipColor);
   }
 
   @override
   bool shouldRepaint(covariant _SpeedometerGaugePainter oldDelegate) {
     return oldDelegate.angle != angle ||
         oldDelegate.isConnected != isConnected ||
-        oldDelegate.activeMode != activeMode ||
-        oldDelegate.isSlouchAlert != isSlouchAlert ||
-        oldDelegate.isSlouchWarning != isSlouchWarning;
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Real-Time Articulated 2D Sagittal Spine Model Tracker
-// ─────────────────────────────────────────────────────────────────────────────
-
-class RealTimeSpineTracker extends StatelessWidget {
-  final double pitchAngle;
-  final bool isConnected;
-  final ActivityMode activeMode;
-  final bool isSlouchAlert;
-  final bool isSlouchWarning;
-
-  const RealTimeSpineTracker({
-    super.key,
-    required this.pitchAngle,
-    required this.isConnected,
-    this.activeMode = ActivityMode.normal,
-    this.isSlouchAlert = false,
-    this.isSlouchWarning = false,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return SagittalPostureViewer(
-      pitchAngle: isConnected ? pitchAngle : 0.0,
-      isConnected: isConnected,
-      activeMode: activeMode,
-      isSlouchAlert: isSlouchAlert,
-      isSlouchWarning: isSlouchWarning,
-      width: 220,
-      height: 190,
-      showBadge: false,
-    );
-  }
-}
-
-class SagittalPostureViewer extends StatelessWidget {
-  /// Real-time pitch angle in degrees (0.0° to 45.0°+)
-  final double pitchAngle;
-  final bool isConnected;
-  final ActivityMode activeMode;
-  final bool isSlouchAlert;
-  final bool isSlouchWarning;
-  final double? width;
-  final double? height;
-  final bool showBadge;
-
-  const SagittalPostureViewer({
-    super.key,
-    required this.pitchAngle,
-    this.isConnected = true,
-    this.activeMode = ActivityMode.normal,
-    this.isSlouchAlert = false,
-    this.isSlouchWarning = false,
-    this.width,
-    this.height,
-    this.showBadge = true,
-  });
-
-  /// Helper to determine status color based on active mode's thresholds and forgiveness time
-  Color _getStatusColor(double angle) {
-    if (!isConnected) {
-      return const Color(0xFF64B5F6); // Standby / Disconnected: Ice Blue
-    }
-    final absAngle = angle.abs();
-    final threshold = activeMode.angle.toDouble();
-
-    if (isSlouchAlert || absAngle > threshold + 8.0) {
-      return const Color(0xFFFF1744); // Critical Slouch: Neon Red
-    } else if (isSlouchWarning || absAngle > threshold) {
-      return const Color(0xFFFFB300); // Warning / Forgiveness Buffer: Vibrant Amber
-    } else {
-      return const Color(0xFF00E5FF); // Normal: Glowing Cyan
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final statusColor = _getStatusColor(pitchAngle);
-
-    return TweenAnimationBuilder<double>(
-      tween: Tween<double>(begin: 0.0, end: pitchAngle),
-      duration: const Duration(milliseconds: 250),
-      curve: Curves.easeOutCubic,
-      builder: (context, animatedAngle, child) {
-        return SizedBox(
-          width: width ?? double.infinity,
-          height: height ?? 380,
-          child: Stack(
-            children: [
-              // Use the supplied sagittal reference as the actual model.
-              // The lower back remains anchored while the live pitch gently
-              // rotates the figure to show the user's posture direction.
-              Positioned.fill(
-                child: Center(
-                  child: Transform.rotate(
-                    angle: animatedAngle.clamp(-45.0, 45.0) *
-                        math.pi /
-                        180.0 *
-                        0.35,
-                    alignment: const Alignment(0.0, 0.72),
-                    child: ColorFiltered(
-                      colorFilter: ColorFilter.mode(
-                        statusColor == const Color(0xFF00E5FF)
-                            ? Colors.transparent
-                            : statusColor.withValues(alpha: 0.65),
-                        BlendMode.srcATop,
-                      ),
-                      child: Image.asset(
-                        'assets/images/spine_model.png',
-                        width: 150,
-                        height: 188,
-                        fit: BoxFit.contain,
-                        filterQuality: FilterQuality.high,
-                        semanticLabel: 'Side profile posture model',
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-
-              // Overlay Angle Telemetry Badge (shown when standalone)
-              if (showBadge && isConnected)
-                Positioned(
-                  top: 16,
-                  right: 16,
-                  child: Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withValues(alpha: 0.6),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                        color: statusColor.withValues(alpha: 0.5),
-                      ),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Container(
-                          width: 8,
-                          height: 8,
-                          decoration: BoxDecoration(
-                            color: statusColor,
-                            shape: BoxShape.circle,
-                            boxShadow: [
-                              BoxShadow(
-                                color: statusColor,
-                                blurRadius: 6,
-                                spreadRadius: 1,
-                              )
-                            ],
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          "${animatedAngle.toStringAsFixed(1)}°",
-                          style: TextStyle(
-                            color: statusColor,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 14,
-                            fontFamily: 'monospace',
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-}
-
-// ignore: unused_element
-class _PostureSpinePainter extends CustomPainter {
-  final double pitchAngle;
-  final Color accentColor;
-  final bool isConnected;
-
-  _PostureSpinePainter({
-    required this.pitchAngle,
-    required this.accentColor,
-    required this.isConnected,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    // Dynamic responsive scale factor based on container dimensions
-    final double scale = size.height / 360.0;
-    final centerX = size.width * 0.42; // Center horizontally aligned to profile
-    final centerY = size.height * 0.88; // Base at bottom lumbar anchor
-
-    // 1. Draw Background HUD Grid Lines
-    _drawHudGrid(canvas, size);
-
-    // 2. Draw Translucent Body Wireframe Silhouette (Articulates with cervical flexion)
-    _drawBodyWireframe(canvas, size, centerX, centerY, scale);
-
-    // 3. Compute Anatomical Spinal Node Coordinates
-    // Fixed Thoracic Anchor Points
-    final Offset t12 = Offset(centerX, centerY);
-    final Offset t8 = Offset(centerX - (4 * scale), centerY - (45 * scale));
-    final Offset t4 = Offset(centerX - (6 * scale), centerY - (90 * scale));
-
-    // C7-T1 Pivot Point Landmark (sensor placement level)
-    final Offset c7 = Offset(centerX - (4 * scale), centerY - (130 * scale));
-
-    // Dynamic Cervical Flexion Trigonometry (Pivot around C7-T1)
-    final double rad = pitchAngle * math.pi / 180.0;
-
-    // Segment Lengths (scaled proportionally)
-    final double midNeckLen = 45.0 * scale;
-    final double headLen = 40.0 * scale;
-
-    // Forward displacement (dx) and downward compression (dy)
-    final Offset c4 = Offset(
-      c7.dx + midNeckLen * math.sin(rad * 0.65),
-      c7.dy - midNeckLen * math.cos(rad * 0.65),
-    );
-
-    final Offset c1 = Offset(
-      c4.dx + headLen * math.sin(rad),
-      c4.dy - headLen * math.cos(rad),
-    );
-
-    final List<Offset> nodes = [t12, t8, t4, c7, c4, c1];
-
-    // 4. Draw Connecting Glowing Cubic Spline Curve
-    final Path spinePath = Path();
-    spinePath.moveTo(t12.dx, t12.dy);
-
-    for (int i = 0; i < nodes.length - 1; i++) {
-      final p0 = nodes[i];
-      final p1 = nodes[i + 1];
-      final controlPoint = Offset((p0.dx + p1.dx) / 2, (p0.dy + p1.dy) / 2);
-      spinePath.quadraticBezierTo(
-          p0.dx, p0.dy, controlPoint.dx, controlPoint.dy);
-    }
-    spinePath.lineTo(c1.dx, c1.dy);
-
-    // Outer Glow Path
-    final Paint glowPaint = Paint()
-      ..color = accentColor.withValues(alpha: isConnected ? 0.50 : 0.25)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = math.max(4.0 * scale, 3.5)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 7);
-    canvas.drawPath(spinePath, glowPaint);
-
-    // Core Solid Path
-    final Paint corePaint = Paint()
-      ..color = isConnected ? accentColor : accentColor.withValues(alpha: 0.7)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = math.max(2.5 * scale, 2.0)
-      ..strokeCap = StrokeCap.round;
-    canvas.drawPath(spinePath, corePaint);
-
-    // 5. Draw Glowing Vertebral Nodes
-    for (int i = 0; i < nodes.length; i++) {
-      final node = nodes[i];
-      final isC7 = (i == 3); // Highlight C7-T1 sensor placement landmark
-
-      // Node Outer Glow
-      final Paint nodeGlow = Paint()
-        ..color = isC7
-            ? Colors.white
-            : accentColor.withValues(alpha: isConnected ? 0.80 : 0.45)
-        ..maskFilter = MaskFilter.blur(
-            BlurStyle.normal, isC7 ? (8 * scale).clamp(5, 10) : 5);
-      canvas.drawCircle(
-        node,
-        isC7 ? (7.0 * scale).clamp(5.0, 8.0) : (4.5 * scale).clamp(3.0, 5.0),
-        nodeGlow,
-      );
-
-      // Node Inner Core
-      final Paint nodeCore = Paint()
-        ..color = isC7
-            ? Colors.white
-            : (isConnected ? const Color(0xFFE0F7FA) : Colors.white70)
-        ..style = PaintingStyle.fill;
-      canvas.drawCircle(
-        node,
-        isC7 ? (3.5 * scale).clamp(2.5, 4.0) : (2.2 * scale).clamp(1.5, 2.5),
-        nodeCore,
-      );
-
-      // Draw subtle telemetry pulse rings around C7 when active
-      if (isC7 && isConnected) {
-        final pulsePaint = Paint()
-          ..color = accentColor.withValues(alpha: 0.35)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.0;
-        canvas.drawCircle(node, (12.0 * scale).clamp(8.0, 14.0), pulsePaint);
-      }
-    }
-  }
-
-  void _drawHudGrid(Canvas canvas, Size size) {
-    final Paint gridPaint = Paint()
-      ..color = const Color(0xFF1E293B).withValues(alpha: 0.35)
-      ..strokeWidth = 0.8;
-
-    for (double x = 0; x < size.width; x += 28) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), gridPaint);
-    }
-    for (double y = 0; y < size.height; y += 28) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), gridPaint);
-    }
-  }
-
-  void _drawBodyWireframe(
-    Canvas canvas,
-    Size size,
-    double cx,
-    double cy,
-    double scale,
-  ) {
-    final Paint meshPaint = Paint()
-      ..color = const Color(0xFF1976D2).withValues(alpha: 0.42)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.1;
-
-    final double rad = pitchAngle * math.pi / 180.0;
-    final double neckTiltX = math.sin(rad) * (28.0 * scale);
-    final double neckTiltY = (1 - math.cos(rad)) * (12.0 * scale);
-    final Offset neck = Offset(
-      cx - (4 * scale) + neckTiltX * 0.45,
-      cy - (164 * scale) + neckTiltY * 0.45,
-    );
-    final Offset head = Offset(
-      cx + neckTiltX,
-      cy - (218 * scale) + neckTiltY,
-    );
-
-    // Side-profile contour based on the supplied sagittal reference image.
-    final Path bodyOutline = Path()
-      ..moveTo(cx - (30 * scale), cy)
-      ..cubicTo(
-        cx - (48 * scale),
-        cy - (56 * scale),
-        cx - (48 * scale),
-        cy - (122 * scale),
-        neck.dx - (15 * scale),
-        neck.dy + (12 * scale),
-      )
-      ..cubicTo(
-        neck.dx - (24 * scale),
-        neck.dy - (24 * scale),
-        head.dx - (24 * scale),
-        head.dy + (28 * scale),
-        head.dx - (15 * scale),
-        head.dy - (18 * scale),
-      )
-      ..cubicTo(
-        head.dx - (6 * scale),
-        head.dy - (34 * scale),
-        head.dx + (22 * scale),
-        head.dy - (30 * scale),
-        head.dx + (25 * scale),
-        head.dy - (12 * scale),
-      )
-      ..lineTo(head.dx + (39 * scale), head.dy + (3 * scale))
-      ..lineTo(head.dx + (27 * scale), head.dy + (8 * scale))
-      ..lineTo(head.dx + (21 * scale), head.dy + (18 * scale))
-      ..cubicTo(
-        head.dx + (17 * scale),
-        head.dy + (32 * scale),
-        neck.dx + (23 * scale),
-        neck.dy - (4 * scale),
-        cx + (46 * scale),
-        cy - (72 * scale),
-      )
-      ..cubicTo(
-        cx + (62 * scale),
-        cy - (38 * scale),
-        cx + (61 * scale),
-        cy - (14 * scale),
-        cx + (52 * scale),
-        cy,
-      );
-    canvas.drawPath(bodyOutline, meshPaint);
-
-    // Ear and jaw landmarks make the model read as a side-facing person.
-    final Paint detailPaint = Paint()
-      ..color = const Color(0xFF00B8D4).withValues(alpha: 0.34)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 0.9;
-    canvas.drawOval(
-      Rect.fromCenter(
-        center: Offset(head.dx - (7 * scale), head.dy + (1 * scale)),
-        width: 15 * scale,
-        height: 22 * scale,
-      ),
-      detailPaint,
-    );
-    final jaw = Path()
-      ..moveTo(head.dx - (1 * scale), head.dy + (12 * scale))
-      ..quadraticBezierTo(
-        head.dx + (9 * scale),
-        head.dy + (28 * scale),
-        neck.dx + (12 * scale),
-        neck.dy - (2 * scale),
-      );
-    canvas.drawPath(jaw, detailPaint);
-
-    // Rib and pelvis contour lines provide a stable 2D mesh behind the live spine.
-    for (int i = 0; i < 4; i++) {
-      final y = cy - ((45 + i * 25) * scale);
-      final rib = Path()
-        ..moveTo(cx - (27 * scale), y)
-        ..quadraticBezierTo(
-          cx + (5 * scale),
-          y - (10 * scale),
-          cx + (42 * scale),
-          y + (2 * scale),
-        );
-      canvas.drawPath(rib, detailPaint);
-    }
-    final pelvis = Path()
-      ..moveTo(cx - (29 * scale), cy - (18 * scale))
-      ..quadraticBezierTo(
-        cx + (5 * scale),
-        cy - (4 * scale),
-        cx + (48 * scale),
-        cy - (20 * scale),
-      );
-    canvas.drawPath(pelvis, detailPaint);
-  }
-
-  @override
-  bool shouldRepaint(covariant _PostureSpinePainter oldDelegate) {
-    return oldDelegate.pitchAngle != pitchAngle ||
-        oldDelegate.accentColor != accentColor ||
-        oldDelegate.isConnected != isConnected;
+        oldDelegate.activeMode != activeMode;
   }
 }

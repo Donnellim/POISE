@@ -164,4 +164,59 @@ void main() {
     expect(find.byType(LineChart), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  test('Centidegree raw pitch and baseline angles normalize to realistic physical bounds', () {
+    final testNow = DateTime(2026, 10, 19, 12);
+    // Simulating legacy/centidegree records: 565.7 baseline and 3141.0 peak slouch
+    final unscaledRecords = [
+      PostureRecord(
+        at: testNow.subtract(const Duration(minutes: 2)),
+        seconds: 120,
+        pitch: 565.7, // Centidegrees -> 5.66°
+        baselineAngle: 565.7,
+        mode: ActivityMode.normal,
+      ),
+      PostureRecord(
+        at: testNow.subtract(const Duration(seconds: 40)),
+        seconds: 40,
+        pitch: 3141.0, // Centidegrees -> 31.41°
+        mode: ActivityMode.normal,
+        slouchEvents: 1,
+      ),
+    ];
+
+    final summary = AnalyticsSummary(unscaledRecords, AnalyticsPeriod.today, testNow);
+
+    // Mean absolute deviation must reflect physical angle (~12.1°), NOT 565.7°!
+    expect(summary.averageAbsoluteDeviation, closeTo(12.1, 0.5));
+    expect(summary.averageAbsoluteDeviation, lessThanOrEqualTo(60.0));
+
+    // Peak deviation must reflect physical peak (31.4°), NOT 3141.0°!
+    expect(summary.maxAbsoluteDeviation, closeTo(31.41, 0.1));
+    expect(summary.maxAbsoluteDeviation, lessThanOrEqualTo(60.0));
+  });
+
+  test('Short wear duration event frequency avoids astronomical rates', () {
+    final testNow = DateTime(2026, 10, 19, 12);
+    // Simulating 32 events in a 167-second test session
+    final shortSessionRecords = [
+      for (int i = 0; i < 32; i++)
+        PostureRecord(
+          at: testNow.subtract(Duration(seconds: 167 - i * 5)),
+          seconds: 5,
+          pitch: 20.0,
+          mode: ActivityMode.normal,
+          slouchEvents: 1,
+        ),
+    ];
+
+    final summary = AnalyticsSummary(shortSessionRecords, AnalyticsPeriod.today, testNow);
+    expect(summary.totalSeconds, 160);
+    expect(summary.totalSlouchEvents, 32);
+
+    // Prior formula gave 32 / (160/3600) = 720.0/hr!
+    // With normalization against at least 1 hr, rate is 32.0/hr (capped <= 60.0/hr).
+    expect(summary.hourlyEventFrequency, closeTo(32.0, 0.1));
+    expect(summary.hourlyEventFrequency, lessThanOrEqualTo(60.0));
+  });
 }
