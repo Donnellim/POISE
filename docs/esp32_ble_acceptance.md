@@ -25,3 +25,11 @@ Automated tests inject notifications and a command writer; they do not verify a 
 7. Drop the connection during monitoring and during a pending command. Verify unavailable status, disabled controls and no false command success.
 8. Reconnect while idle, paused and monitoring; verify the corresponding interface.
 9. Suppress CONFIG or an APPLIED response; verify timeout errors, disabled controls during synchronization, retained values and recovery via a fresh snapshot.
+
+## Reconnection elapsed-time regression
+
+Every connection subscribes to FFE1 before sending STATE:SYNC on FFE2. The app logs `Subscribed to FFE1 notifications`, `TX FFE2 STATE:SYNC`, and each incoming `RX FFE1 SESSION:SYNC:<id>,ELAPSED_MS:<elapsed>` payload. Each valid session snapshot replaces the dashboard time anchor, including unchanged IDs, unchanged elapsed values, and zero. A repeated SESSION:STARTED does not reset an existing timer. Paused snapshots stay frozen until monitoring resumes.
+
+Start monitoring on the device offline, connect once, then double-click to reopen advertising and short-press to stop advertising and continue offline. Wait at least 30 seconds, reopen advertising, and reconnect. Compare the incoming ELAPSED_MS with the displayed timer (whole seconds). Repeat while paused. If no fresh SESSION:SYNC arrives, inspect the notification subscription and firmware response to STATE:SYNC; if the payload is fresh but the display is stale, inspect dashboard snapshot handling.
+
+Automated regression coverage in `test/rev9_mode_sync_test.dart` exercises both snapshot arrival orders, initial mounting after synchronization, repeated reconnections with the same ID, a 30-second offline interval, duplicate STARTED, repeated elapsed corrections, and paused/resumed timing. The protocol and timer suites pass 23 tests, and `flutter analyze` reports no issues. Physical-device verification remains required; no ESP32 firmware or live radio capture was available for this change.

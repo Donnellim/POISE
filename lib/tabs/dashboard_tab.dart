@@ -82,6 +82,7 @@ class _DashboardTabState extends State<DashboardTab> {
   bool _isSessionPaused = false;
   int _sessionSeconds = 0;
   Timer? _sessionTimer;
+  PoiseSessionSnapshot? _appliedSessionSnapshot;
   bool _calibrationDialogOpen = false;
   StreamSubscription<double>? _blePitchSub;
   StreamSubscription<int>? _bleDeviceSessionSub;
@@ -554,6 +555,16 @@ class _DashboardTabState extends State<DashboardTab> {
         _isSessionPaused = ble.deviceState == PoiseDeviceState.paused;
         _isCalibrated = running;
         if (!running) _sessionSeconds = 0;
+        final snapshot = ble.sessionSnapshot;
+        if (running &&
+            snapshot != null &&
+            !identical(snapshot, _appliedSessionSnapshot)) {
+          _appliedSessionSnapshot = snapshot;
+          _sessionSeconds = snapshot.elapsed.inSeconds;
+          // Restart the local tick from every authoritative device snapshot.
+          // Session identity never suppresses an elapsed-time correction.
+          _sessionTimer?.cancel();
+        }
       }
       if (!ble.isConnected || !running || _isSessionPaused) {
         _livePostureAngle = null;
@@ -646,8 +657,7 @@ class _DashboardTabState extends State<DashboardTab> {
 
   String _formatDuration(int totalSeconds) {
     if (!_isSessionRunning) return '00:00:00';
-    final int cleanSec =
-        (totalSeconds < 0 || totalSeconds > 86400) ? 0 : totalSeconds;
+    final int cleanSec = totalSeconds < 0 ? 0 : totalSeconds;
     final int hours = cleanSec ~/ 3600;
     final int minutes = (cleanSec % 3600) ~/ 60;
     final int seconds = cleanSec % 60;
