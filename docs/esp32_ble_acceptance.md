@@ -4,7 +4,7 @@ The supplied protocol replaces the previous phone-owned Rev 9 configuration beha
 
 Connection subscribes to FFE1 before STATE:SYNC. Both a recognized STATE snapshot and a valid CONFIG are required before controls become available. A timeout keeps settings visible and controls disabled, with a retry action. Mode and vibration changes wait for their matching APPLIED response. Failed commands trigger a new snapshot without being reported as successful.
 
-Start Session sends only SESSION:START. Session state follows notifications; calibration progress is shown while CALIBRATING. Separate calibration sends CALIBRATE. The supplied protocol does not define a dedicated calibration-success acknowledgment: the app waits for STATE:IDLE or STATE:MONITORING to conclude that action. Confirm these terminal notifications on the firmware. No firmware source is included in this repository.
+Step 19 Start Session opens the modal and sends CALIBRATION:READY. The app recognizes STATE:CALIBRATION_READY and enables Set Calibration after acknowledgment. Confirm closes the modal and sends CALIBRATE; success requires SESSION:STARTED or STATE:MONITORING. Cancel, outside-tap, and Back dismissals send CALIBRATION:CANCEL and await STATE:IDLE. SESSION:START remains supported by the service for compatibility, but the dashboard modal flow never sends it. No firmware source is included in this repository.
 
 ## Automated coverage
 
@@ -14,13 +14,21 @@ Verification on 2026-10-22: static analysis reported no issues; the full suite p
 
 ## Physical-device checks still required
 
+### Calibration confirmation and guest Bluetooth access
+
+The dashboard asks the user to set neutral posture before each app-started session. While waiting, the firmware's Step 19 READY state should blink yellow without capturing calibration. Confirmation starts the firmware's three-second solid-yellow calibration followed by its white success cue. The app timer stays at zero until monitoring/start acknowledgment. Reconnection to monitoring or paused sessions does not open the modal or reset the elapsed timer.
+
+Use the Step 19 firmware with this flow. Its bench-test build has ENFORCE_VBUS_LOCKOUT=false: the motor can run on USB. Keep the device on the bench for testing and restore ENFORCE_VBUS_LOCKOUT=true in firmware before normal use/charging. The app does not change this firmware flag. Physical LED timing and USB behavior must be verified on hardware.
+
+On a fresh Android installation, enter guest mode and choose No on either Device Check or Device Setup. Confirm the disconnected dashboard appears without a permission prompt. Tap Bluetooth: allow Nearby devices on Android 12+ or Location on older Android versions, then verify discovery and connection. Deny once and verify the permission-specific message and Settings action, then retry. If Android permanently blocks the prompt, enable access in Settings. Test this on a physical phone; widget tests simulate permission decisions.
+
 Automated tests inject notifications and a command writer; they do not verify a physical radio, ESP32 LittleFS, LED timing, or physical button behavior.
 
 1. Connect and inspect BLE traffic: subscribe FFE1, then STATE:SYNC on FFE2; no calibration or session command until requested.
 2. Verify the saved mode and vibration values appear and the connected device remains idle with its LED off after its indication.
 3. Disconnect; verify values remain visible and mode, vibration and session controls cannot send commands.
 4. Reconnect and verify CONFIG restores saved values. Repeat for each mode and vibration preference after APPLIED responses and a power cycle.
-5. Start a session without a baseline. Verify exactly SESSION:START, approximately three seconds of calibration, then monitoring only after firmware confirmation.
+5. Tap Start Session: verify CALIBRATION:READY, blinking yellow, and no calibration capture. Cancel: verify CALIBRATION:CANCEL and LED off. Open again and press Set Calibration: verify CALIBRATE, approximately three seconds solid yellow, white success cue, and monitoring/timer only after firmware confirmation.
 6. Pause, resume and end; verify each transition follows device messages.
 7. Drop the connection during monitoring and during a pending command. Verify unavailable status, disabled controls and no false command success.
 8. Reconnect while idle, paused and monitoring; verify the corresponding interface.

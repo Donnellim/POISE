@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_application_1/bluetooth/poise_ble_service.dart';
 import 'package:flutter/material.dart';
@@ -111,18 +112,17 @@ void main() {
       'Guest setup No preserves guest status; Yes follows normal setup to idle dashboard',
       (tester) async {
     await start(tester, const DeviceCheckPage(isGuest: true));
-    for (var i = 0; i < 3; i++) {
-      await tester.tap(find.text('Yes'));
-      await tester.pumpAndSettle();
-      expect(find.byType(DeviceSetupPage), findsOneWidget);
-      await tester.tap(find.text('No'));
-      await tester.pumpAndSettle();
-      expect(
-          tester.widget<DeviceCheckPage>(find.byType(DeviceCheckPage)).isGuest,
-          true);
-    }
-    expect(Navigator.of(tester.element(find.byType(DeviceCheckPage))).canPop(),
-        false);
+    await tester.tap(find.text('Yes'));
+    await tester.pumpAndSettle();
+    expect(find.byType(DeviceSetupPage), findsOneWidget);
+    await tester.tap(find.text('No'));
+    await tester.pumpAndSettle();
+    expect(
+        tester.widget<DashboardPage>(find.byType(DashboardPage)).isGuest, true);
+    expect(find.text('Not Connected'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+    await tester
+        .pumpWidget(const MaterialApp(home: DeviceCheckPage(isGuest: true)));
     await tester.tap(find.text('Yes'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Yes'));
@@ -144,6 +144,42 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Guest Account'), findsOneWidget);
     expect(find.text('Save Your Data'), findsOneWidget);
+  });
+
+  testWidgets(
+      'guest Bluetooth requests permission before scanning and retries denial',
+      (tester) async {
+    final ble = PoiseBleService.instance;
+    var requests = 0;
+    final permission = Completer<bool>();
+    ble.permissionRequester = () {
+      requests++;
+      return permission.future;
+    };
+    await start(tester, const DeviceCheckPage(isGuest: true));
+    await tester.tap(find.text('No'));
+    await tester.pumpAndSettle();
+    expect(requests, 0);
+    await tester.tap(find.text('Not Connected'));
+    await tester.pump();
+    expect(requests, 1);
+    expect(ble.state, PoiseBleState.disconnected);
+    expect(find.text('Searching for P.O.I.S.E. Device'), findsNothing);
+    permission.complete(false);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Allow Nearby devices'), findsOneWidget);
+    expect(find.textContaining('Could not reconnect'), findsNothing);
+    ble.permissionRequester = () async {
+      requests++;
+      return true;
+    };
+    await tester.tap(find.text('Not Connected'));
+    await tester.pumpAndSettle();
+    expect(requests, 2);
+    expect(find.text('Device Connected'), findsOneWidget);
+    expect(find.text('Session Inactive'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+    await ble.disconnect();
   });
 
   testWidgets(

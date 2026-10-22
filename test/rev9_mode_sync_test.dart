@@ -26,6 +26,10 @@ void main() {
     ble.commandWriter = (command) async {
       commands.add(command);
       if (command == 'STATE:SYNC') snapshot();
+      if (command == 'CALIBRATION:READY') {
+        ble.receiveMessage('STATE:CALIBRATION_READY');
+      }
+      if (command == 'CALIBRATION:CANCEL') ble.receiveMessage('STATE:IDLE');
     };
   });
   tearDown(() async {
@@ -136,6 +140,7 @@ void main() {
       await tester.pump();
       expect(commands, ['STATE:SYNC', 'STATE:SYNC']);
       expect(find.text('00:00:44'), findsOneWidget);
+      expect(find.text('Set Your Neutral Posture'), findsNothing);
       ble.receiveMessage('SESSION:STARTED');
       await tester.pump(const Duration(seconds: 2));
       expect(find.text('00:00:46'), findsOneWidget);
@@ -149,6 +154,7 @@ void main() {
       await ble.connect(device);
       await tester.pump(const Duration(seconds: 5));
       expect(find.text('00:00:47'), findsOneWidget);
+      expect(find.text('Set Your Neutral Posture'), findsNothing);
       expect(commands, ['STATE:SYNC', 'STATE:SYNC', 'STATE:SYNC']);
       ble.receiveMessage('STATE:MONITORING');
       await tester.pump(const Duration(seconds: 2));
@@ -278,6 +284,100 @@ void main() {
     }
   });
 
+  testWidgets('Step 19 prepares, cancels, and confirms every new session',
+      (tester) async {
+    PoiseLocalDatabase.instance.mockRecordsForTesting = [];
+    addTearDown(() => PoiseLocalDatabase.instance.mockRecordsForTesting = null);
+    tester.view.physicalSize = const Size(390, 1000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await ble.connect(device);
+    await tester.pumpWidget(const MaterialApp(
+        home:
+            Scaffold(body: DashboardTab(activeMode: ActivityMode.commuting))));
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('session-toggle')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(commands, ['STATE:SYNC', 'CALIBRATION:READY', 'CALIBRATION:CANCEL']);
+    for (var session = 0; session < 2; session++) {
+      await tester.tap(find.byKey(const ValueKey('session-toggle')));
+      await tester.pumpAndSettle();
+      expect(find.text('Set Your Neutral Posture'), findsOneWidget);
+      expect(commands.where((c) => c == 'CALIBRATE').length, session);
+      expect(ble.deviceState, PoiseDeviceState.calibrationReady);
+      expect(find.text('00:00:00'), findsOneWidget);
+      await tester.tap(find.text('Set Calibration'));
+      await tester.pump();
+      expect(commands.where((c) => c == 'CALIBRATE').length, session + 1);
+      expect(commands, isNot(contains('SESSION:START')));
+      expect(find.text('Session Running'), findsNothing);
+      ble.receiveMessage('STATE:CALIBRATING');
+      await tester.pump(const Duration(seconds: 3));
+      expect(find.text('00:00:00'), findsOneWidget);
+      ble.receiveMessage('SESSION:STARTED');
+      await tester.pump();
+      expect(find.text('Session Running'), findsOneWidget);
+      ble.receiveMessage('SESSION:ENDED');
+      await tester.pumpAndSettle();
+    }
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  for (final dismissal in ['back', 'outside', 'disconnect']) {
+    testWidgets('Step 19 handles $dismissal while READY is pending',
+        (tester) async {
+      PoiseLocalDatabase.instance.mockRecordsForTesting = [];
+      addTearDown(
+          () => PoiseLocalDatabase.instance.mockRecordsForTesting = null);
+      tester.view.physicalSize = const Size(390, 1000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await ble.connect(device);
+      ble.commandWriter = (command) async {
+        commands.add(command);
+        if (command == 'CALIBRATION:CANCEL') ble.receiveMessage('STATE:IDLE');
+      };
+      await tester.pumpWidget(const MaterialApp(
+          home: Scaffold(
+              body: DashboardTab(activeMode: ActivityMode.commuting))));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('session-toggle')));
+      await tester.pumpAndSettle();
+      expect(commands, ['STATE:SYNC', 'CALIBRATION:READY']);
+      expect(
+          tester
+              .widget<ElevatedButton>(
+                  find.widgetWithText(ElevatedButton, 'Set Calibration'))
+              .onPressed,
+          isNull);
+      if (dismissal == 'outside') {
+        await tester.tapAt(const Offset(5, 5));
+      } else {
+        if (dismissal == 'disconnect') await ble.disconnect();
+        await tester.binding.handlePopRoute();
+      }
+      await tester.pumpAndSettle();
+      if (dismissal != 'disconnect') {
+        // Closing before READY arrives must serialize CANCEL after READY.
+        expect(commands, ['STATE:SYNC', 'CALIBRATION:READY']);
+        ble.receiveMessage('STATE:CALIBRATION_READY');
+        await tester.pumpAndSettle();
+        expect(commands.last, 'CALIBRATION:CANCEL');
+        expect(ble.deviceState, PoiseDeviceState.idle);
+      } else {
+        expect(commands, ['STATE:SYNC', 'CALIBRATION:READY']);
+      }
+      expect(commands, isNot(contains('CALIBRATE')));
+      expect(commands, isNot(contains('SESSION:START')));
+      expect(find.text('Session Running'), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+    });
+  }
+
   testWidgets(
       'disconnected controls preserve visible values and have no callbacks',
       (tester) async {
@@ -314,7 +414,11 @@ void main() {
     expect(find.text('Session Inactive'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('session-toggle')));
     await tester.pump();
-    expect(commands, ['STATE:SYNC', 'SESSION:START']);
+    expect(commands, ['STATE:SYNC', 'CALIBRATION:READY']);
+    expect(find.text('Set Your Neutral Posture'), findsOneWidget);
+    await tester.tap(find.text('Set Calibration'));
+    await tester.pump();
+    expect(commands, ['STATE:SYNC', 'CALIBRATION:READY', 'CALIBRATE']);
     expect(find.text('Session Running'), findsNothing);
     ble.receiveMessage('STATE:CALIBRATING');
     await tester.pump();

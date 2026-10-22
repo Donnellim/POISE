@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../activity_mode.dart';
 import '../mode_preferences.dart';
@@ -102,6 +103,7 @@ enum PoiseDeviceSessionAction {
 
 enum PoiseDeviceState {
   idle,
+  calibrationReady,
   calibrating,
   monitoring,
   paused,
@@ -190,6 +192,7 @@ class PoiseBleService extends ChangeNotifier {
     } else {
       final states = <String, PoiseDeviceState>{
         'STATE:IDLE': PoiseDeviceState.idle,
+        'STATE:CALIBRATION_READY': PoiseDeviceState.calibrationReady,
         'STATE:CALIBRATING': PoiseDeviceState.calibrating,
         'STATE:MONITORING': PoiseDeviceState.monitoring,
         'STATE:PAUSED': PoiseDeviceState.paused,
@@ -249,9 +252,7 @@ class PoiseBleService extends ChangeNotifier {
     protocolError = null;
     _changed();
     try {
-      if (command == 'STATE:SYNC') {
-        debugPrint('[PoiseBleService] TX FFE2 STATE:SYNC');
-      }
+      debugPrint('[PoiseBleService] TX FFE2 $command');
       if (commandWriter != null) {
         await commandWriter!(command).timeout(responseTimeout);
       } else if (_calibrationChar != null) {
@@ -262,7 +263,7 @@ class PoiseBleService extends ChangeNotifier {
       } else if (_activeDevice == null && allowsSimulation) {
         if (command == 'STATE:SYNC') {
           receiveMessage(
-              'STATE:${deviceState == PoiseDeviceState.chargingLockout ? 'CHARGING_LOCKOUT' : deviceState.name.toUpperCase()}');
+              'STATE:${deviceState == PoiseDeviceState.chargingLockout ? 'CHARGING_LOCKOUT' : deviceState == PoiseDeviceState.calibrationReady ? 'CALIBRATION_READY' : deviceState.name.toUpperCase()}');
           receiveMessage(
               'CONFIG:MODE:${_hardwareActiveMode.index + 1},VIB:${vibrationEnabled ? 1 : 0}');
         } else {
@@ -288,6 +289,33 @@ class PoiseBleService extends ChangeNotifier {
 
   @visibleForTesting
   bool simulateForTesting = false;
+  @visibleForTesting
+  bool simulateScanFindsDevice = true;
+  @visibleForTesting
+  Future<bool> Function()? permissionRequester;
+
+  static const _accessChannel = MethodChannel('poise/bluetooth_access');
+
+  /// Ask before inspecting the adapter or discovering devices on Android.
+  Future<bool> requestBluetoothPermissions() async {
+    try {
+      if (permissionRequester != null) return await permissionRequester!();
+      if (allowsSimulation || defaultTargetPlatform != TargetPlatform.android) {
+        return true;
+      }
+      return await _accessChannel.invokeMethod<bool>('requestPermissions') ??
+          false;
+    } catch (e) {
+      debugPrint('[PoiseBleService] Bluetooth permission request failed: $e');
+      return false;
+    }
+  }
+
+  Future<void> openBluetoothPermissionSettings() async {
+    if (!allowsSimulation && defaultTargetPlatform == TargetPlatform.android) {
+      await _accessChannel.invokeMethod<void>('openSettings');
+    }
+  }
 
   bool get isTesting => simulateForTesting;
 
@@ -618,6 +646,7 @@ class PoiseBleService extends ChangeNotifier {
 
     final supported = await isBleSupported();
     if (!supported && allowsSimulation) {
+      if (!simulateScanFindsDevice) return;
       // Hardware unavailable (or unit test/desktop environment):
       // Gracefully simulate discovering the POISE device so the app is always testable.
       _discoveredDevices.add(const PoiseDiscoveredDevice(
@@ -1170,16 +1199,23 @@ class PoiseBleService extends ChangeNotifier {
 
   Future<bool> sendSessionCommand(String command) async {
     if (!sessionControlsEnabled) return false;
+    if (command.startsWith('CALIBRATION:') &&
+        deviceState != PoiseDeviceState.idle &&
+        deviceState != PoiseDeviceState.calibrationReady) {
+      return false;
+    }
     final responses = <String, Set<String>>{
+      'CALIBRATION:READY': {'STATE:CALIBRATION_READY'},
+      'CALIBRATION:CANCEL': {'STATE:IDLE'},
       'SESSION:START': {'STATE:MONITORING', 'SESSION:STARTED'},
       'SESSION:PAUSE': {'STATE:PAUSED', 'SESSION:PAUSED'},
       'SESSION:RESUME': {'STATE:MONITORING', 'SESSION:RESUMED'},
       'SESSION:END': {'STATE:IDLE', 'SESSION:ENDED'},
-      'CALIBRATE': {'STATE:MONITORING', 'STATE:IDLE'},
+      'CALIBRATE': {'STATE:MONITORING', 'SESSION:STARTED'},
     };
     if (!responses.containsKey(command)) return false;
     final success = await _exchange(command, responses[command]!);
-    if (!success && isConnected) unawaited(_recoverAfterCommandFailure());
+    if (!success && isConnected) await _recoverAfterCommandFailure();
     return success;
   }
 
@@ -1306,6 +1342,8 @@ class PoiseBleService extends ChangeNotifier {
     _isModeSynchronized = false;
     _lastSentModeCommand = null;
     simulateQuickSettingsSynced = false;
+    simulateScanFindsDevice = true;
+    permissionRequester = null;
     _state = PoiseBleState.disconnected;
   }
 

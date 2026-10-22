@@ -186,6 +186,7 @@ void main() {
   testWidgets('Failed dashboard reconnect stays disconnected and allows retry',
       (tester) async {
     await PoiseBleService.instance.disconnect();
+    PoiseBleService.instance.simulateScanFindsDevice = false;
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('poise.deviceId');
     await tester.pumpWidget(const MaterialApp(
@@ -204,6 +205,26 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets(
+      'Dashboard Bluetooth scan finds nearby device and connects from disconnected state',
+      (tester) async {
+    await PoiseBleService.instance.disconnect();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('poise.deviceId');
+    await tester.pumpWidget(const MaterialApp(
+      home: DashboardPage(initialBluetoothConnected: false),
+    ));
+    expect(find.text('Not Connected'), findsOneWidget);
+    await tester.tap(find.text('Not Connected'));
+    await tester.pump();
+    // Immediate scan results can connect before the first frame is rendered.
+    expect(find.textContaining('Could not reconnect'), findsNothing);
+    await tester.pumpAndSettle();
+    expect(find.text('Searching for P.O.I.S.E. Device'), findsNothing);
+    expect(find.text('Device Connected'), findsOneWidget);
+    expect(find.textContaining('P.O.I.S.E. device connected'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
   testWidgets(
       'Proceed after zero baseline always opens Home and clears setup routes',
       (tester) async {
