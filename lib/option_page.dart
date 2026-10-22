@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'bluetooth/poise_ble_service.dart';
-import 'calibration_page.dart';
+import 'dashboard_page.dart';
 import 'widgets/gradient_background.dart';
 import 'create_account_page.dart';
 import 'sign_in_page.dart';
@@ -119,7 +119,7 @@ class OptionPage extends StatelessWidget {
                       await ble.checkAndConnectSystemDevice()) {
                     if (!context.mounted) return;
                     Navigator.of(context).push(MaterialPageRoute<void>(
-                      builder: (_) => const CalibrationPage(isGuest: true),
+                      builder: (_) => const DashboardPage(isGuest: true),
                     ));
                   } else {
                     if (!context.mounted) return;

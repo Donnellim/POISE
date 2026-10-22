@@ -15,6 +15,11 @@ void main() {
     PoiseBleService.instance.simulateForTesting = true;
     PoiseBleService.instance.resetForTesting();
     PoiseLocalDatabase.instance.mockRecordsForTesting = [];
+    SharedPreferences.setMockInitialValues({});
+    PoiseBleService.instance.resetForTesting();
+    PoiseBleService.instance.simulateForTesting = true;
+    await PoiseBleService.instance.connect(const PoiseDiscoveredDevice(
+        id: 'SIMULATED-TEST', name: 'POISE', rssi: -50));
   });
 
   tearDown(() async {
@@ -24,7 +29,8 @@ void main() {
   });
 
   group('Static 2D Spinal Model & C7–T1 Alert Specificity', () {
-    testWidgets('Spine model renders clean static 2D image without marker during optimal posture',
+    testWidgets(
+        'Spine model renders clean static 2D image without marker during optimal posture',
         (tester) async {
       await tester.pumpWidget(
         const MaterialApp(
@@ -55,7 +61,8 @@ void main() {
       expect(find.byKey(const ValueKey('neck-glow-alert')), findsNothing);
     });
 
-    testWidgets('Thresholds and warnings vary strictly per mode at C7–T1 region',
+    testWidgets(
+        'Thresholds and warnings vary strictly per mode at C7–T1 region',
         (tester) async {
       // 1. Focus Mode (10° threshold, 1s dwell)
       // Angle 12° exceeds 10° -> Orange warning glow while counting

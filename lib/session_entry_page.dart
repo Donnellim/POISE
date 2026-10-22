@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'bluetooth/poise_ble_service.dart';
-import 'calibration_page.dart';
+
 import 'dashboard_page.dart';
 import 'device_check_page.dart';
 import 'device_session.dart';
@@ -71,9 +71,9 @@ class _SessionEntryPageState extends State<SessionEntryPage> {
       ));
     } else if (isQuickSettingsSynced) {
       // User connected via Quick Settings panel outside the app without in-app device check.
-      // Auto-detected and synced -> Go directly to CalibrationPage.
+      // Restore device settings and wait for Start Session on the dashboard.
       Navigator.of(context).pushReplacement(MaterialPageRoute<void>(
-        builder: (_) => const CalibrationPage(isGuest: false),
+        builder: (_) => const DashboardPage(isGuest: false),
       ));
     } else {
       Navigator.of(context).pushReplacement(MaterialPageRoute<void>(

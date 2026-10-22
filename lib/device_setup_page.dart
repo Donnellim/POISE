@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'bluetooth/poise_ble_service.dart';
-import 'calibration_page.dart';
+import 'dashboard_page.dart';
 import 'widgets/gradient_background.dart';
 import 'get_started_page.dart';
 import 'device_check_page.dart';
@@ -47,8 +47,7 @@ class DeviceSetupPage extends StatelessWidget {
                             if (!context.mounted) return;
                             Navigator.of(context).pushReplacement(
                               MaterialPageRoute(
-                                builder: (_) =>
-                                    CalibrationPage(isGuest: isGuest),
+                                builder: (_) => DashboardPage(isGuest: isGuest),
                               ),
                             );
                           } else {

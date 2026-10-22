@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../activity_mode.dart';
 import '../mode_preferences.dart';
+import '../feedback_preferences.dart';
 import '../device_session.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
@@ -13,8 +14,7 @@ import '../notifications/local_notification_service.dart';
 
 /// Configuration for POISE Bluetooth Low Energy (BLE) communication.
 ///
-/// NOTE: Once your firmware developer defines the final UUIDs or data formats,
-/// simply update the constants in this class.
+/// UUIDs for the ESP32-C3 firmware protocol.
 class PoiseBleConfig {
   /// Primary GATT Service UUID for the POISE Peripheral.
   /// (Default: standard 16-bit custom service 0xFFE0 in 128-bit form)
@@ -24,7 +24,7 @@ class PoiseBleConfig {
   static const String postureCharacteristicUuid =
       '0000ffe1-0000-1000-8000-00805f9b34fb';
 
-  /// GATT Characteristic UUID for zero baseline calibration or tare command (Write).
+  /// FFE2 receives ASCII configuration, synchronization and session commands.
   static const String calibrationCharacteristicUuid =
       '0000ffe2-0000-1000-8000-00805f9b34fb';
 
@@ -50,10 +50,15 @@ class PoiseBleConfig {
   static bool isPoiseDeviceName(String name) {
     if (name.isEmpty) return false;
     final upper = name.toUpperCase();
-    if (deviceNamePrefixes.any((prefix) => upper.contains(prefix.toUpperCase()))) {
+    if (deviceNamePrefixes
+        .any((prefix) => upper.contains(prefix.toUpperCase()))) {
       return true;
     }
-    final clean = upper.replaceAll('.', '').replaceAll('-', '').replaceAll('_', '').replaceAll(' ', '');
+    final clean = upper
+        .replaceAll('.', '')
+        .replaceAll('-', '')
+        .replaceAll('_', '')
+        .replaceAll(' ', '');
     return clean.contains('POISE');
   }
 
@@ -95,14 +100,163 @@ enum PoiseDeviceSessionAction {
   ended,
 }
 
+enum PoiseDeviceState {
+  idle,
+  calibrating,
+  monitoring,
+  paused,
+  chargingLockout,
+  error
+}
+
 /// Central Bluetooth Low Energy (BLE) service for scanning, connecting,
 /// and streaming live posture data from the POISE hardware.
-class PoiseBleService {
+class PoiseBleService extends ChangeNotifier {
   PoiseBleService._();
   static final PoiseBleService instance = PoiseBleService._();
 
   StreamSubscription<BluetoothAdapterState>? _adapterSubscription;
   bool _connecting = false;
+  ChangeNotifier get protocolChanges => this;
+  PoiseDeviceState deviceState = PoiseDeviceState.idle;
+  bool vibrationEnabled = true;
+  String? protocolError;
+  bool _receivedState = false;
+  bool _receivedConfig = false;
+  ActivityMode? _snapshotMode;
+  bool? _snapshotVibration;
+  Completer<bool>? _pending;
+  Set<String> _expected = {};
+  bool get commandPending => _pending != null;
+  bool get controlsEnabled => isModeSynchronized && !commandPending;
+  bool get sessionControlsEnabled =>
+      controlsEnabled &&
+      deviceState != PoiseDeviceState.calibrating &&
+      deviceState != PoiseDeviceState.chargingLockout &&
+      deviceState != PoiseDeviceState.error;
+  @visibleForTesting
+  Future<void> Function(String)? commandWriter;
+  @visibleForTesting
+  Duration responseTimeout = const Duration(seconds: 8);
+  @visibleForTesting
+  void receiveMessage(String message) =>
+      _handleIncomingTelemetry(utf8.encode(message));
+
+  void _changed() {
+    notifyListeners();
+    _modeSyncController.add(isModeSynchronized);
+  }
+
+  void _confirmConfig(ActivityMode mode, bool vibration) {
+    _hardwareActiveMode = mode;
+    _phoneSavedMode = mode;
+    vibrationEnabled = vibration;
+    _modeStreamController.add(mode);
+    unawaited(ModePreferences.saveMode(mode));
+    unawaited(FeedbackPreferences.saveVibration(vibration));
+  }
+
+  bool _handleProtocol(String message) {
+    final config =
+        RegExp(r'^CONFIG:MODE:([1-4]),VIB:([01])$').firstMatch(message);
+    if (config != null) {
+      _snapshotMode = ActivityMode.values[int.parse(config[1]!) - 1];
+      _snapshotVibration = config[2] == '1';
+      _receivedConfig = true;
+      if (isModeSynchronized && !commandPending) {
+        _confirmConfig(_snapshotMode!, _snapshotVibration!);
+      }
+    } else {
+      final states = <String, PoiseDeviceState>{
+        'STATE:IDLE': PoiseDeviceState.idle,
+        'STATE:CALIBRATING': PoiseDeviceState.calibrating,
+        'STATE:MONITORING': PoiseDeviceState.monitoring,
+        'STATE:PAUSED': PoiseDeviceState.paused,
+        'STATE:CHARGING_LOCKOUT': PoiseDeviceState.chargingLockout,
+        'STATE:ERROR': PoiseDeviceState.error,
+        'SESSION:STARTED': PoiseDeviceState.monitoring,
+        'SESSION:RESUMED': PoiseDeviceState.monitoring,
+        'SESSION:PAUSED': PoiseDeviceState.paused,
+        'SESSION:ENDED': PoiseDeviceState.idle,
+      };
+      if (states.containsKey(message)) {
+        deviceState = states[message]!;
+        if (message.startsWith('STATE:')) _receivedState = true;
+        if (deviceState == PoiseDeviceState.error ||
+            deviceState == PoiseDeviceState.chargingLockout) {
+          protocolError = deviceState == PoiseDeviceState.error
+              ? 'Device reported an error.'
+              : 'Charging: session controls unavailable.';
+          if (_expected.isNotEmpty &&
+              _pending != null &&
+              !_pending!.isCompleted) {
+            _pending!.complete(false);
+          }
+        }
+      } else if (RegExp(r'^MODE:APPLIED:[1-4]$').hasMatch(message)) {
+        _confirmConfig(
+            ActivityMode.values[int.parse(message.split(':').last) - 1],
+            vibrationEnabled);
+      } else if (RegExp(r'^VIB:APPLIED:[01]$').hasMatch(message)) {
+        _confirmConfig(_hardwareActiveMode, message.endsWith('1'));
+      } else {
+        return message.startsWith('STATE:') ||
+            message.startsWith('CONFIG:') ||
+            message.startsWith('MODE:') ||
+            message.startsWith('VIB:');
+      }
+    }
+    if (_pending != null && !_pending!.isCompleted) {
+      if (_expected.contains(message) ||
+          (_expected.isEmpty && _receivedState && _receivedConfig)) {
+        _pending!.complete(true);
+      }
+    }
+    _changed();
+    return true;
+  }
+
+  Future<bool> _exchange(String command, Set<String> expected) async {
+    if (!isConnected || commandPending) return false;
+    final pending = Completer<bool>();
+    _pending = pending;
+    _expected = expected;
+    protocolError = null;
+    _changed();
+    try {
+      if (commandWriter != null) {
+        await commandWriter!(command).timeout(responseTimeout);
+      } else if (_calibrationChar != null) {
+        await _calibrationChar!
+            .write(utf8.encode(command),
+                withoutResponse: !_calibrationChar!.properties.write)
+            .timeout(responseTimeout);
+      } else if (_activeDevice == null && allowsSimulation) {
+        if (command == 'STATE:SYNC') {
+          receiveMessage(
+              'STATE:${deviceState == PoiseDeviceState.chargingLockout ? 'CHARGING_LOCKOUT' : deviceState.name.toUpperCase()}');
+          receiveMessage(
+              'CONFIG:MODE:${_hardwareActiveMode.index + 1},VIB:${vibrationEnabled ? 1 : 0}');
+        } else {
+          receiveMessage(expected.first);
+        }
+      } else {
+        throw StateError('FFE2 is unavailable');
+      }
+      final accepted = await pending.future.timeout(responseTimeout);
+      if (!accepted) throw StateError('Device unavailable or command rejected');
+      return isConnected;
+    } catch (_) {
+      protocolError = isConnected
+          ? 'Device did not confirm $command. Synchronize or reconnect to retry.'
+          : 'Device disconnected. Reconnect to continue.';
+      _isModeSynchronized = false;
+      return false;
+    } finally {
+      if (identical(_pending, pending)) _pending = null;
+      _changed();
+    }
+  }
 
   @visibleForTesting
   bool simulateForTesting = false;
@@ -261,7 +415,9 @@ class PoiseBleService {
 
   bool _isModeSynchronized = false;
   bool get isModeSynchronized =>
-      isConnected && _isModeSynchronized && (_hardwareActiveMode == _phoneSavedMode);
+      isConnected &&
+      _isModeSynchronized &&
+      (_hardwareActiveMode == _phoneSavedMode);
 
   String? _lastSentModeCommand;
   String? get lastSentModeCommand => _lastSentModeCommand;
@@ -496,6 +652,7 @@ class PoiseBleService {
     if (_connecting) return false;
     if (device.rawDevice == null && !allowsSimulation) return false;
     _connecting = true;
+    _isModeSynchronized = false;
     _watchAdapter();
     await stopScan();
     _setState(PoiseBleState.connecting);
@@ -506,6 +663,7 @@ class PoiseBleService {
       _setState(PoiseBleState.connected);
       await _rememberDevice(device);
       await syncSavedModeToHardware();
+      await DeviceSession.completeSetup();
       _connecting = false;
       return true;
     }
@@ -536,6 +694,7 @@ class PoiseBleService {
       _setState(PoiseBleState.connected);
       await _rememberDevice(device);
       await syncSavedModeToHardware();
+      await DeviceSession.completeSetup();
       _connecting = false;
       return true;
     } catch (e) {
@@ -575,7 +734,8 @@ class PoiseBleService {
             }
           }
 
-          if (char.uuid == Guid(PoiseBleConfig.calibrationCharacteristicUuid)) {
+          if (service.uuid == Guid(PoiseBleConfig.serviceUuid) &&
+              char.uuid == Guid(PoiseBleConfig.calibrationCharacteristicUuid)) {
             _calibrationChar = char;
           }
         }
@@ -587,7 +747,8 @@ class PoiseBleService {
             final val = await batteryChar.read();
             if (val.isNotEmpty) updateBatteryLevel(val[0]);
           }
-          if (batteryChar.properties.notify || batteryChar.properties.indicate) {
+          if (batteryChar.properties.notify ||
+              batteryChar.properties.indicate) {
             await _batteryCharSubscription?.cancel();
             _batteryCharSubscription =
                 batteryChar.onValueReceived.listen((data) {
@@ -601,51 +762,17 @@ class PoiseBleService {
         }
       }
 
-      // Smart fallback: If exact configured UUID was not found, auto-discover by characteristic properties
-      if (telemetryChar == null) {
-        for (final service in services) {
-          final sUuid = service.uuid.toString().toLowerCase();
-          if (sUuid.contains('180f') || sUuid.contains('1800') || sUuid.contains('1801')) {
-            continue; // Skip battery and standard generic access services
-          }
-          for (final char in service.characteristics) {
-            final cUuid = char.uuid.toString().toLowerCase();
-            if ((char.properties.notify || char.properties.indicate) &&
-                !cUuid.contains('2a19')) {
-              telemetryChar = char;
-              debugPrint('[PoiseBleService] Auto-discovered telemetry characteristic: ${char.uuid}');
-              break;
-            }
-          }
-          if (telemetryChar != null) break;
-        }
-      }
-
-      if (_calibrationChar == null) {
-        for (final service in services) {
-          final sUuid = service.uuid.toString().toLowerCase();
-          if (sUuid.contains('180f') || sUuid.contains('1800') || sUuid.contains('1801')) {
-            continue;
-          }
-          for (final char in service.characteristics) {
-            if (char.properties.write || char.properties.writeWithoutResponse) {
-              _calibrationChar = char;
-              debugPrint('[PoiseBleService] Auto-discovered calibration characteristic: ${char.uuid}');
-              break;
-            }
-          }
-          if (_calibrationChar != null) break;
-        }
-      }
-
-      if (telemetryChar == null) {
-        throw StateError("POISE telemetry unavailable");
+      if (telemetryChar == null ||
+          _calibrationChar == null ||
+          !(_calibrationChar!.properties.write ||
+              _calibrationChar!.properties.writeWithoutResponse)) {
+        throw StateError(
+            'Expected FFE0 service with FFE1 notify and FFE2 write');
       }
       await _charValueSubscription?.cancel();
       _charValueSubscription =
           telemetryChar.onValueReceived.listen(_handleIncomingTelemetry);
       await telemetryChar.setNotifyValue(true);
-      if (telemetryChar.properties.read) await telemetryChar.read();
     } catch (e) {
       debugPrint('[PoiseBleService] Service discovery error: $e');
       rethrow;
@@ -667,6 +794,13 @@ class PoiseBleService {
     // Check if packet contains string/JSON telemetry or offline records
     try {
       final str = utf8.decode(bytes).trim();
+      if (str.contains('\n')) {
+        for (final line in str.split(RegExp(r'[\r\n]+'))) {
+          if (line.isNotEmpty) receiveMessage(line);
+        }
+        return;
+      }
+      if (_handleProtocol(str)) return;
 
       // 1. JSON Telemetry or LittleFS Dump
       if (str.startsWith('{')) {
@@ -736,8 +870,9 @@ class PoiseBleService {
       if (str.startsWith('SESSION:') ||
           str.startsWith('ELAPSED:') ||
           str.startsWith('UPTIME:')) {
-        final clean =
-            str.replaceFirst(RegExp(r'^(SESSION:|ELAPSED:|UPTIME:)'), '').trim();
+        final clean = str
+            .replaceFirst(RegExp(r'^(SESSION:|ELAPSED:|UPTIME:)'), '')
+            .trim();
         final s = int.tryParse(clean) ?? double.tryParse(clean)?.toInt();
         if (s != null) {
           updateDeviceSessionSeconds(s);
@@ -783,6 +918,9 @@ class PoiseBleService {
       }
     } catch (_) {}
 
+    // Never reinterpret unknown ASCII responses as binary measurements.
+    if (bytes.every((b) => b >= 32 && b <= 126) && rawAngle == null) return;
+
     // 4. Binary 4-byte Float
     if (rawAngle == null && bytes.length >= 4) {
       try {
@@ -823,7 +961,8 @@ class PoiseBleService {
     }
   }
 
-  void _applyCalibratedPitch(double rawAngle, {bool isHardwareDeviation = true}) {
+  void _applyCalibratedPitch(double rawAngle,
+      {bool isHardwareDeviation = true}) {
     var angle = rawAngle;
     if (angle.abs() > 180.0) {
       angle = angle / 100.0;
@@ -961,19 +1100,15 @@ class PoiseBleService {
 
   /// Disconnects from the connected POISE hardware.
   Future<void> disconnect() async {
-    _stopMockTelemetryStream();
-    await _charValueSubscription?.cancel();
-    _charValueSubscription = null;
-
-    try {
-      await _activeDevice?.disconnect();
-    } catch (_) {}
-
-    await _deviceStateSubscription?.cancel();
+    final device = _activeDevice;
+    final connectionSubscription = _deviceStateSubscription;
     _deviceStateSubscription = null;
-    _activeDevice = null;
-    _connectedDeviceName = null;
+    // Disable controls synchronously, before waiting for platform cleanup.
     _handleDisconnection();
+    await connectionSubscription?.cancel();
+    try {
+      await device?.disconnect();
+    } catch (_) {}
   }
 
   void _handleDisconnection() {
@@ -985,137 +1120,77 @@ class PoiseBleService {
     _batteryCharSubscription?.cancel();
     _batteryCharSubscription = null;
     _calibrationChar = null;
-    // Under Rev 9 firmware, the hardware falls back to Normal on disconnect.
-    // The mobile app retains the phone's last selected preference and does NOT overwrite it.
-    _hardwareActiveMode = ActivityMode.normal;
+    if (_pending != null && !_pending!.isCompleted) _pending!.complete(false);
+    _receivedState = false;
+    _receivedConfig = false;
+    protocolError = 'Device disconnected. Reconnect to continue.';
     _isModeSynchronized = false;
     if (!_modeSyncController.isClosed) {
       _modeSyncController.add(false);
     }
     _setState(PoiseBleState.disconnected);
+    _changed();
   }
 
-  /// Calibrate zero baseline: sets the current angle as 0° (tare),
-  /// and transmits a calibration command to the hardware if supported.
+  /// Separate calibration action; the firmware owns the baseline.
   Future<void> setZeroBaseline({double? baselinePitch}) async {
-    var baseline = baselinePitch ??
-        (_rawPitchAngle != 0.0
-            ? _rawPitchAngle
-            : (_currentPitchAngle + _zeroBaselineOffset));
-    if (baseline.abs() > 180.0) baseline /= 100.0;
-    baseline = baseline.clamp(-60.0, 60.0);
-    _zeroBaselineOffset = baseline;
-    _currentPitchAngle =
-        (_rawPitchAngle - _zeroBaselineOffset).clamp(-60.0, 60.0);
-    _pitchAngleController.add(_currentPitchAngle);
-
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setDouble('poise.baseline', _zeroBaselineOffset);
-
-    // If connected to hardware, write tare command [0x01] to calibration characteristic
-    if (_calibrationChar != null) {
-      try {
-        await _calibrationChar!.write([0x01], withoutResponse: false);
-      } catch (e) {
-        debugPrint('[PoiseBleService] Write calibration command error: $e');
-      }
-    }
+    await sendSessionCommand('CALIBRATE');
   }
 
-  /// Sends a session lifecycle command to the connected hardware.
   Future<bool> sendSessionCommand(String command) async {
-    if (_calibrationChar != null) {
-      try {
-        final bytes = utf8.encode(command);
-        await _calibrationChar!.write(bytes, withoutResponse: false);
-        return true;
-      } catch (e) {
-        debugPrint('[PoiseBleService] Write session command error: $e');
-      }
-    }
-    return false;
+    if (!sessionControlsEnabled) return false;
+    final responses = <String, Set<String>>{
+      'SESSION:START': {'STATE:MONITORING', 'SESSION:STARTED'},
+      'SESSION:PAUSE': {'STATE:PAUSED', 'SESSION:PAUSED'},
+      'SESSION:RESUME': {'STATE:MONITORING', 'SESSION:RESUMED'},
+      'SESSION:END': {'STATE:IDLE', 'SESSION:ENDED'},
+      'CALIBRATE': {'STATE:MONITORING', 'STATE:IDLE'},
+    };
+    if (!responses.containsKey(command)) return false;
+    final success = await _exchange(command, responses[command]!);
+    if (!success && isConnected) unawaited(_recoverAfterCommandFailure());
+    return success;
   }
 
-  /// Synchronizes the phone's saved mode preference with the connected POISE hardware.
-  ///
-  /// After BLE connection and service discovery:
-  /// 1. Loads the phone's saved mode preference.
-  /// 2. Sends the corresponding `MODE:<id>` command to FFE2.
-  /// 3. Confirms that the command is applied before marking hardware as synchronized.
+  /// Requests state and saved configuration; never pushes phone defaults.
   Future<bool> syncSavedModeToHardware() async {
-    final saved = await ModePreferences.getSavedMode();
-    _phoneSavedMode = saved;
-    if (!_modeStreamController.isClosed) {
-      _modeStreamController.add(saved);
-    }
-
-    if (isConnected && (_calibrationChar != null || allowsSimulation)) {
-      final modeId = ModeModel.idForActivityMode(saved);
-      final cmd = 'MODE:$modeId';
-      _lastSentModeCommand = cmd;
-      bool success = true;
-      if (_calibrationChar != null) {
-        success = await sendSessionCommand(cmd);
-      }
-      if (success) {
-        _hardwareActiveMode = saved;
-        _isModeSynchronized = true;
-        if (!_modeSyncController.isClosed) {
-          _modeSyncController.add(true);
-        }
-        return true;
-      }
-    }
-
-    _hardwareActiveMode = ActivityMode.normal;
+    if (!isConnected || commandPending) return false;
     _isModeSynchronized = false;
-    if (!_modeSyncController.isClosed) {
-      _modeSyncController.add(false);
+    _receivedState = false;
+    _receivedConfig = false;
+    final success = await _exchange('STATE:SYNC', {});
+    _isModeSynchronized = success && _receivedState && _receivedConfig;
+    if (_isModeSynchronized) {
+      _confirmConfig(_snapshotMode!, _snapshotVibration!);
     }
-    return false;
+    _changed();
+    return isModeSynchronized;
   }
 
-  /// Transmits active mode configuration to the connected hardware.
-  ///
-  /// Immediately sends the `MODE:<id>` command, saves the new preference on the phone,
-  /// and confirms application on hardware.
+  Future<void> _recoverAfterCommandFailure() async {
+    final failure = protocolError;
+    final restored = await syncSavedModeToHardware();
+    if (restored && failure != null) {
+      protocolError = failure;
+      _changed();
+    }
+  }
+
   Future<bool> sendModeCommand(ActivityMode mode) async {
-    _phoneSavedMode = mode;
-    await ModePreferences.saveMode(mode);
-    if (!_modeStreamController.isClosed) {
-      _modeStreamController.add(mode);
-    }
-
-    final modeId = ModeModel.idForActivityMode(mode);
-    final cmd = 'MODE:$modeId';
-    _lastSentModeCommand = cmd;
-
-    if (isConnected && (_calibrationChar != null || allowsSimulation)) {
-      bool success = true;
-      if (_calibrationChar != null) {
-        success = await sendSessionCommand(cmd);
-      }
-      if (success) {
-        _hardwareActiveMode = mode;
-        _isModeSynchronized = true;
-        if (!_modeSyncController.isClosed) {
-          _modeSyncController.add(true);
-        }
-        return true;
-      }
-    }
-
-    _hardwareActiveMode = ActivityMode.normal;
-    _isModeSynchronized = false;
-    if (!_modeSyncController.isClosed) {
-      _modeSyncController.add(false);
-    }
-    return false;
+    if (!controlsEnabled) return false;
+    final id = ModeModel.idForActivityMode(mode);
+    _lastSentModeCommand = 'MODE:$id';
+    final success = await _exchange('MODE:$id', {'MODE:APPLIED:$id'});
+    if (!success && isConnected) unawaited(_recoverAfterCommandFailure());
+    return success;
   }
 
-  /// Transmits device vibration feedback preference to the connected hardware.
   Future<bool> sendVibrationCommand(bool enabled) async {
-    return sendSessionCommand('VIB:${enabled ? 1 : 0}');
+    if (!controlsEnabled) return false;
+    final value = enabled ? 1 : 0;
+    final success = await _exchange('VIB:$value', {'VIB:APPLIED:$value'});
+    if (!success && isConnected) unawaited(_recoverAfterCommandFailure());
+    return success;
   }
 
   void _setState(PoiseBleState newState) {
@@ -1170,6 +1245,16 @@ class PoiseBleService {
     _adapterSubscription?.cancel();
     _adapterSubscription = null;
     _connecting = false;
+    commandWriter = null;
+    responseTimeout = const Duration(seconds: 8);
+    _pending = null;
+    _expected = {};
+    _receivedConfig = false;
+    _receivedState = false;
+    protocolError = null;
+    deviceState = PoiseDeviceState.idle;
+    vibrationEnabled = true;
+    _calibrationChar = null;
     _scanSubscription?.cancel();
     _deviceStateSubscription?.cancel();
     _charValueSubscription?.cancel();
@@ -1193,6 +1278,7 @@ class PoiseBleService {
   }
 
   /// Release resources
+  @override
   void dispose() {
     stopMockTelemetryStream();
     _adapterSubscription?.cancel();
@@ -1212,5 +1298,6 @@ class PoiseBleService {
     _batteryLevelController.close();
     _modeSyncController.close();
     _modeStreamController.close();
+    super.dispose();
   }
 }

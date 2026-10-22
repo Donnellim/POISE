@@ -13,15 +13,15 @@ class CalibrationPage extends StatelessWidget {
   final bool isGuest;
 
   Future<void> _showCalibratedOverlay(BuildContext context) async {
-    final currentRaw = PoiseBleService.instance.rawPitchAngle;
-    await PoiseBleService.instance.setZeroBaseline(baselinePitch: currentRaw);
-    if (PoiseBleService.instance.isConnected) {
-      await PoiseBleService.instance.sendSessionCommand('SESSION:START');
-    }
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('poise.isCalibrated', true);
+    final success =
+        await PoiseBleService.instance.sendSessionCommand('CALIBRATE');
     if (!context.mounted) return;
-
+    if (!success) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(PoiseBleService.instance.protocolError ??
+              'Connect and synchronize the device first.')));
+      return;
+    }
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -131,7 +131,11 @@ class CalibrationPage extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => ListenableBuilder(
+      listenable: PoiseBleService.instance.protocolChanges,
+      builder: (context, _) => _buildContent(context));
+
+  Widget _buildContent(BuildContext context) {
     final Size screenSize = MediaQuery.of(context).size;
     final double effectiveWidth =
         screenSize.width > 500 ? 500 : screenSize.width;
@@ -180,12 +184,19 @@ class CalibrationPage extends StatelessWidget {
 
               const Spacer(flex: 5),
 
+              if (PoiseBleService.instance.commandPending)
+                const Padding(
+                    padding: EdgeInsets.all(8),
+                    child: Text(
+                        'Calibrating... Hold still. Waiting for device confirmation.')),
               // ── Set Zero Baseline Button ──
               SizedBox(
                 width: buttonWidth,
                 height: 52,
                 child: ElevatedButton(
-                  onPressed: () => _showCalibratedOverlay(context),
+                  onPressed: PoiseBleService.instance.sessionControlsEnabled
+                      ? () => _showCalibratedOverlay(context)
+                      : null,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF4285F4),
                     foregroundColor: Colors.white,

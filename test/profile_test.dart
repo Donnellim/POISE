@@ -6,10 +6,15 @@ import 'package:flutter_application_1/dashboard_page.dart';
 import 'package:flutter_application_1/tabs/profile_tab.dart';
 
 void main() {
-  setUp(() {
+  setUp(() async {
     SharedPreferences.setMockInitialValues({});
     PoiseBleService.instance.resetForTesting();
     PoiseBleService.instance.simulateForTesting = true;
+    SharedPreferences.setMockInitialValues({});
+    PoiseBleService.instance.resetForTesting();
+    PoiseBleService.instance.simulateForTesting = true;
+    await PoiseBleService.instance.connect(const PoiseDiscoveredDevice(
+        id: 'SIMULATED-TEST', name: 'POISE', rssi: -50));
   });
   tearDown(() {
     PoiseBleService.instance.resetForTesting();
@@ -121,6 +126,7 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
+    await PoiseBleService.instance.disconnect();
     await tester.pumpWidget(const MaterialApp(
       home: DashboardPage(
         initialBluetoothConnected: false,
@@ -155,7 +161,7 @@ void main() {
 
     // Active monitoring restored on Dashboard
     expect(find.text('Device Connected'), findsOneWidget);
-    expect(find.text('0°'), findsOneWidget);
+    expect(find.text('Session Inactive'), findsOneWidget);
     expect(find.text('PITCH ANGLE'), findsOneWidget);
     expect(find.text('Optimal Posture'), findsNothing);
   });
@@ -168,6 +174,7 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
+    await PoiseBleService.instance.disconnect();
     await tester.pumpWidget(const MaterialApp(
       home: DashboardPage(
         initialBluetoothConnected: false,

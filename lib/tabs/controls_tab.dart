@@ -210,18 +210,8 @@ class _ControlsTabState extends State<ControlsTab> {
   }
 
   void _onVibrationToggled(bool value) {
-    setState(() => _vibrationEnabled = value);
+    if (!PoiseBleService.instance.controlsEnabled) return;
     widget.onVibrationChanged?.call(value);
-    final messenger = ScaffoldMessenger.of(context);
-    messenger.clearSnackBars();
-    messenger.showSnackBar(SnackBar(
-      content: Text(value
-          ? 'Device vibration feedback enabled.'
-          : 'Device vibration feedback disabled.'),
-      behavior: SnackBarBehavior.floating,
-      margin: const EdgeInsets.only(bottom: 80, left: 16, right: 16),
-      duration: const Duration(seconds: 2),
-    ));
   }
 
   void _onPhoneNotificationToggled(bool value) {
@@ -261,6 +251,7 @@ class _ControlsTabState extends State<ControlsTab> {
 
   Widget _buildControlsContent(BuildContext context) {
     final mode = widget.selectedMode;
+    final enabled = PoiseBleService.instance.controlsEnabled;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -278,6 +269,13 @@ class _ControlsTabState extends State<ControlsTab> {
         ),
         const SizedBox(height: 10),
 
+        if (PoiseBleService.instance.isConnected &&
+            !PoiseBleService.instance.isModeSynchronized &&
+            !PoiseBleService.instance.commandPending)
+          TextButton(
+              onPressed: () =>
+                  PoiseBleService.instance.syncSavedModeToHardware(),
+              child: const Text('Retry synchronization')),
         // ── 1. Activity Mode Container ──
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -317,8 +315,11 @@ class _ControlsTabState extends State<ControlsTab> {
                       Expanded(
                         child: Text(
                           isConnected
-                              ? 'Synced with POISE hardware (${widget.selectedMode.label} active)'
-                              : 'Saved on phone: ${widget.selectedMode.label} • Hardware offline (Rev 9 default: Normal)',
+                              ? (PoiseBleService.instance.protocolError ??
+                                  (PoiseBleService.instance.isModeSynchronized
+                                      ? 'Synced with POISE hardware (${widget.selectedMode.label} active)'
+                                      : 'Synchronizing device settings...'))
+                              : 'Device disconnected - Last known: ${widget.selectedMode.label}',
                           style: TextStyle(
                             color: isConnected
                                 ? const Color(0xFF137333)
@@ -343,7 +344,9 @@ class _ControlsTabState extends State<ControlsTab> {
                       title: ActivityMode.normal.label,
                       subtitle: ActivityMode.normal.threshold,
                       isSelected: widget.selectedMode == ActivityMode.normal,
-                      onTap: () => widget.onModeChanged(ActivityMode.normal),
+                      onTap: enabled
+                          ? () => widget.onModeChanged(ActivityMode.normal)
+                          : null,
                     ),
                   ),
                   const SizedBox(width: 8),
@@ -353,7 +356,9 @@ class _ControlsTabState extends State<ControlsTab> {
                       title: ActivityMode.focus.label,
                       subtitle: ActivityMode.focus.threshold,
                       isSelected: widget.selectedMode == ActivityMode.focus,
-                      onTap: () => widget.onModeChanged(ActivityMode.focus),
+                      onTap: enabled
+                          ? () => widget.onModeChanged(ActivityMode.focus)
+                          : null,
                     ),
                   ),
                 ],
@@ -367,7 +372,9 @@ class _ControlsTabState extends State<ControlsTab> {
                       title: ActivityMode.leisure.label,
                       subtitle: ActivityMode.leisure.threshold,
                       isSelected: widget.selectedMode == ActivityMode.leisure,
-                      onTap: () => widget.onModeChanged(ActivityMode.leisure),
+                      onTap: enabled
+                          ? () => widget.onModeChanged(ActivityMode.leisure)
+                          : null,
                     ),
                   ),
                   const SizedBox(width: 8),
@@ -377,7 +384,9 @@ class _ControlsTabState extends State<ControlsTab> {
                       title: ActivityMode.commuting.label,
                       subtitle: ActivityMode.commuting.threshold,
                       isSelected: widget.selectedMode == ActivityMode.commuting,
-                      onTap: () => widget.onModeChanged(ActivityMode.commuting),
+                      onTap: enabled
+                          ? () => widget.onModeChanged(ActivityMode.commuting)
+                          : null,
                     ),
                   ),
                 ],
@@ -408,7 +417,8 @@ class _ControlsTabState extends State<ControlsTab> {
               const SizedBox(height: 6),
               Container(
                 width: double.infinity,
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                 decoration: BoxDecoration(
                   color: const Color(0xFFBCE7F6),
                   borderRadius: BorderRadius.circular(12),
@@ -483,7 +493,7 @@ class _ControlsTabState extends State<ControlsTab> {
                     ),
                     Switch(
                       value: _vibrationEnabled,
-                      onChanged: _onVibrationToggled,
+                      onChanged: enabled ? _onVibrationToggled : null,
                       thumbIcon: const WidgetStatePropertyAll(Icon(null)),
                       materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                       activeThumbColor: Colors.white,
@@ -561,7 +571,7 @@ class _ModeCard extends StatelessWidget {
   final String title;
   final String subtitle;
   final bool isSelected;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
 
   const _ModeCard({
     required this.icon,
@@ -621,8 +631,8 @@ class _ModeCard extends StatelessWidget {
               ),
             ),
             Padding(
-              padding: const EdgeInsets.only(
-                  left: 8, right: 20, top: 6, bottom: 6),
+              padding:
+                  const EdgeInsets.only(left: 8, right: 20, top: 6, bottom: 6),
               child: Row(
                 children: [
                   Icon(icon, color: const Color(0xFF0F1E29), size: 24),

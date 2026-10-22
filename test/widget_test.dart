@@ -11,11 +11,16 @@ import 'package:flutter_application_1/get_started_page.dart';
 import 'package:flutter_application_1/database/local_database.dart';
 
 void main() {
-  setUp(() {
+  setUp(() async {
     SharedPreferences.setMockInitialValues({});
     PoiseLocalDatabase.instance.mockRecordsForTesting = [];
     PoiseBleService.instance.resetForTesting();
     PoiseBleService.instance.simulateForTesting = true;
+    SharedPreferences.setMockInitialValues({});
+    PoiseBleService.instance.resetForTesting();
+    PoiseBleService.instance.simulateForTesting = true;
+    await PoiseBleService.instance.connect(const PoiseDiscoveredDevice(
+        id: 'SIMULATED-TEST', name: 'POISE', rssi: -50));
   });
   tearDown(() {
     PoiseLocalDatabase.instance.mockRecordsForTesting = null;
@@ -89,13 +94,14 @@ void main() {
     await tester.tap(find.text('Disconnect Device'));
     await tester.pumpAndSettle();
     expect(find.text('--°'), findsOneWidget);
-    expect(find.text('--°/--s'), findsOneWidget);
+    expect(find.text(ActivityMode.commuting.threshold), findsOneWidget);
     expect(find.text('00:00:00'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('Controls tab displays dedicated Description container updating per mode',
+  testWidgets(
+      'Controls tab displays dedicated Description container updating per mode',
       (tester) async {
     tester.view.physicalSize = const Size(360, 800);
     tester.view.devicePixelRatio = 1;
@@ -125,7 +131,8 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('Controls tab displays Activity Mode, Description, and Feedback Routing without warning banner',
+  testWidgets(
+      'Controls tab displays Activity Mode, Description, and Feedback Routing without warning banner',
       (tester) async {
     tester.view.physicalSize = const Size(360, 800);
     tester.view.devicePixelRatio = 1;
@@ -178,6 +185,9 @@ void main() {
 
   testWidgets('Failed dashboard reconnect stays disconnected and allows retry',
       (tester) async {
+    await PoiseBleService.instance.disconnect();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('poise.deviceId');
     await tester.pumpWidget(const MaterialApp(
       home: DashboardPage(initialBluetoothConnected: false),
     ));
@@ -264,8 +274,7 @@ void main() {
     });
   }
 
-  testWidgets(
-      'GetStartedPage renders and connects without Material assertion',
+  testWidgets('GetStartedPage renders and connects without Material assertion',
       (tester) async {
     tester.view.physicalSize = const Size(360, 800);
     tester.view.devicePixelRatio = 1;

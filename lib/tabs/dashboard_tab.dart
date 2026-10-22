@@ -85,7 +85,7 @@ class _DashboardTabState extends State<DashboardTab> {
   bool _calibrationDialogOpen = false;
   StreamSubscription<double>? _blePitchSub;
   StreamSubscription<int>? _bleDeviceSessionSub;
-  StreamSubscription<PoiseDeviceSessionAction>? _bleDeviceSessionActionSub;
+
   StreamSubscription<int>? _bleBatterySub;
   int _batteryLevel = 100;
   DateTime? _lastAlertNotificationTime;
@@ -112,7 +112,8 @@ class _DashboardTabState extends State<DashboardTab> {
       // If there was an unclosed session from a previous run, close it gracefully in history.
       final active = await PoiseLocalDatabase.instance.getLatestActiveSession();
       if (active != null && !_isSessionRunning) {
-        unawaited(PoiseLocalDatabase.instance.endSession(active.id, DateTime.now()));
+        unawaited(
+            PoiseLocalDatabase.instance.endSession(active.id, DateTime.now()));
       }
 
       // 3. Restore calibration state established at startup or calibration page
@@ -180,18 +181,11 @@ class _DashboardTabState extends State<DashboardTab> {
   Future<void> _startNewSession({bool fromHardware = false}) async {
     if (!_isBluetoothConnected) return;
 
-    // One calibration per session: tare zero baseline to current sensor angle
-    final currentRaw = PoiseBleService.instance.rawPitchAngle;
-    var base = currentRaw;
-    if (base.abs() > 180.0) base /= 100.0;
-    base = base.clamp(-60.0, 60.0);
-    _sessionBaselineAngle = base;
-    await PoiseBleService.instance.setZeroBaseline(baselinePitch: base);
-
     if (!fromHardware) {
       await PoiseBleService.instance.sendSessionCommand('SESSION:START');
+      return;
     }
-
+    final currentRaw = PoiseBleService.instance.rawPitchAngle;
     _closeCurrentSession();
 
     setState(() {
@@ -227,6 +221,7 @@ class _DashboardTabState extends State<DashboardTab> {
     _sessionTimer?.cancel();
     if (!fromHardware) {
       PoiseBleService.instance.sendSessionCommand('SESSION:PAUSE');
+      return;
     }
     setState(() {
       _isSessionPaused = true;
@@ -248,6 +243,7 @@ class _DashboardTabState extends State<DashboardTab> {
     if (!_isSessionRunning || !_isSessionPaused) return;
     if (!fromHardware) {
       PoiseBleService.instance.sendSessionCommand('SESSION:RESUME');
+      return;
     }
     setState(() {
       _isSessionPaused = false;
@@ -265,6 +261,10 @@ class _DashboardTabState extends State<DashboardTab> {
   }
 
   Future<void> _endCurrentSession({bool fromHardware = false}) async {
+    if (!fromHardware) {
+      await PoiseBleService.instance.sendSessionCommand('SESSION:END');
+      return;
+    }
     // If user was slouching when session ended, finalize the posture event
     if (_activeSlouchStartTime != null) {
       final now = DateTime.now();
@@ -293,10 +293,6 @@ class _DashboardTabState extends State<DashboardTab> {
       }
     }
 
-    if (!fromHardware) {
-      await PoiseBleService.instance.sendSessionCommand('SESSION:END');
-    }
-
     _closeCurrentSession();
 
     _sessionTimer?.cancel();
@@ -305,7 +301,8 @@ class _DashboardTabState extends State<DashboardTab> {
         _isSessionRunning = false;
         _isSessionPaused = false;
         _livePostureAngle = null; // Clear live posture reading
-        _sessionSeconds = 0; // Inactive session timer resets strictly to 00:00:00
+        _sessionSeconds =
+            0; // Inactive session timer resets strictly to 00:00:00
       });
     }
 
@@ -323,7 +320,7 @@ class _DashboardTabState extends State<DashboardTab> {
   }
 
   void _toggleSession() {
-    if (!_canMonitor && !_isSessionRunning) return;
+    if (!PoiseBleService.instance.sessionControlsEnabled) return;
     if (_isSessionRunning) {
       _endCurrentSession();
     } else {
@@ -402,7 +399,10 @@ class _DashboardTabState extends State<DashboardTab> {
     }
   }
 
-  bool get _canMonitor => _isBluetoothConnected && _isCalibrated;
+  bool get _canMonitor =>
+      PoiseBleService.instance.isModeSynchronized &&
+      PoiseBleService.instance.deviceState == PoiseDeviceState.monitoring &&
+      _isCalibrated;
 
   @override
   void initState() {
@@ -413,6 +413,8 @@ class _DashboardTabState extends State<DashboardTab> {
     if (!PoiseBleService.instance.isTesting) {
       unawaited(SyncService.instance.restoreFromCloud());
     }
+    PoiseBleService.instance.protocolChanges.addListener(_applyDeviceState);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _applyDeviceState());
     _sessionBaselineAngle = PoiseBleService.instance.zeroBaselineOffset;
     if (widget.isBluetoothConnected != null) {
       _isBluetoothConnected = widget.isBluetoothConnected!;
@@ -450,29 +452,6 @@ class _DashboardTabState extends State<DashboardTab> {
             DateTime.now(),
           ));
         }
-      }
-    });
-
-    _bleDeviceSessionActionSub =
-        PoiseBleService.instance.deviceSessionActionStream.listen((action) {
-      if (!mounted) return;
-      switch (action) {
-        case PoiseDeviceSessionAction.started:
-          if (!_isSessionRunning) {
-            _startNewSession(fromHardware: true);
-          }
-          break;
-        case PoiseDeviceSessionAction.paused:
-          _pauseSession(fromHardware: true);
-          break;
-        case PoiseDeviceSessionAction.resumed:
-          _resumeSession(fromHardware: true);
-          break;
-        case PoiseDeviceSessionAction.ended:
-          if (_isSessionRunning) {
-            _endCurrentSession(fromHardware: true);
-          }
-          break;
       }
     });
 
@@ -563,31 +542,38 @@ class _DashboardTabState extends State<DashboardTab> {
     });
   }
 
+  void _applyDeviceState() {
+    if (!mounted) return;
+    final ble = PoiseBleService.instance;
+    final running = ble.deviceState == PoiseDeviceState.monitoring ||
+        ble.deviceState == PoiseDeviceState.paused;
+    setState(() {
+      _isBluetoothConnected = ble.isConnected;
+      if (ble.isModeSynchronized) {
+        _isSessionRunning = running;
+        _isSessionPaused = ble.deviceState == PoiseDeviceState.paused;
+        _isCalibrated = running;
+        if (!running) _sessionSeconds = 0;
+      }
+      if (!ble.isConnected || !running || _isSessionPaused) {
+        _livePostureAngle = null;
+      }
+    });
+    if (_canMonitor && !_isSessionPaused) {
+      if (_sessionTimer?.isActive != true) _startTimer();
+      if (_shouldTrackDatabaseSession) unawaited(_ensureActiveSessionStarted());
+    } else {
+      _sessionTimer?.cancel();
+    }
+    if (ble.isModeSynchronized && ble.deviceState == PoiseDeviceState.idle) {
+      _closeCurrentSession();
+    }
+  }
+
   @override
   void didUpdateWidget(DashboardTab oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.isBluetoothConnected != null &&
-        widget.isBluetoothConnected != _isBluetoothConnected) {
-      if (widget.isBluetoothConnected == false) {
-        setState(() {
-          _isBluetoothConnected = false;
-          _isSessionRunning = false;
-          _isSessionPaused = false;
-          _livePostureAngle = null;
-        });
-      } else {
-        setState(() {
-          _isBluetoothConnected = true;
-          _isSessionRunning = false;
-          _isSessionPaused = false;
-          _sessionSeconds = 0;
-          if (_isCalibrated) {
-            _livePostureAngle = PoiseBleService.instance.currentPitchAngle;
-          }
-        });
-        _syncActiveSessionWithDeviceAndDatabase();
-      }
-    }
+    _applyDeviceState();
 
     if (widget.triggerRecalibration && !oldWidget.triggerRecalibration) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -652,7 +638,7 @@ class _DashboardTabState extends State<DashboardTab> {
     SyncService.instance.status.removeListener(_onSyncStatusChanged);
     _blePitchSub?.cancel();
     _bleDeviceSessionSub?.cancel();
-    _bleDeviceSessionActionSub?.cancel();
+    PoiseBleService.instance.protocolChanges.removeListener(_applyDeviceState);
     _bleBatterySub?.cancel();
     _sessionTimer?.cancel();
     super.dispose();
@@ -1416,16 +1402,11 @@ class _DashboardTabState extends State<DashboardTab> {
     _showCalibratedOverlay();
   }
 
-  void _showCalibratedOverlay() {
-    if (!_isBluetoothConnected) return;
-    PoiseBleService.instance.setZeroBaseline();
+  Future<void> _showCalibratedOverlay() async {
+    final success =
+        await PoiseBleService.instance.sendSessionCommand('CALIBRATE');
+    if (!mounted || !success) return;
     widget.onBaselineSet?.call();
-    setState(() {
-      _isCalibrated = true;
-      _livePostureAngle = 0.0;
-      _sessionSeconds = 0;
-      _isSessionRunning = true;
-    });
 
     showDialog(
       context: context,
@@ -1702,9 +1683,11 @@ class _DashboardTabState extends State<DashboardTab> {
                             style: TextStyle(
                               color: !hasReading
                                   ? Colors.white
-                                  : (_livePostureAngle!.abs() > widget.activeMode.angle + 5.0
+                                  : (_livePostureAngle!.abs() >
+                                          widget.activeMode.angle + 5.0
                                       ? const Color(0xFFFF1744)
-                                      : (_livePostureAngle!.abs() > widget.activeMode.angle
+                                      : (_livePostureAngle!.abs() >
+                                              widget.activeMode.angle
                                           ? const Color(0xFFFFB300)
                                           : const Color(0xFF00E676))),
                               fontSize: 28,
@@ -1851,9 +1834,7 @@ class _DashboardTabState extends State<DashboardTab> {
                                     ),
                                     const SizedBox(height: 2),
                                     Text(
-                                      _canMonitor
-                                          ? widget.activeMode.label
-                                          : '---',
+                                      widget.activeMode.label,
                                       style: const TextStyle(
                                           color: Colors.black,
                                           fontSize: 15,
@@ -1896,9 +1877,7 @@ class _DashboardTabState extends State<DashboardTab> {
                               ),
                               const SizedBox(height: 3),
                               Text(
-                                _canMonitor
-                                    ? widget.activeMode.threshold
-                                    : '--°/--s',
+                                widget.activeMode.threshold,
                                 style: const TextStyle(
                                     color: Colors.black,
                                     fontSize: 15,
@@ -1929,6 +1908,21 @@ class _DashboardTabState extends State<DashboardTab> {
         ),
         const SizedBox(height: 10),
 
+        if (PoiseBleService.instance.protocolError != null)
+          Text(PoiseBleService.instance.protocolError!,
+              style: const TextStyle(color: Colors.red)),
+        if (PoiseBleService.instance.commandPending)
+          Text(PoiseBleService.instance.deviceState ==
+                  PoiseDeviceState.calibrating
+              ? 'Calibrating... Hold still for about 3 seconds.'
+              : 'Waiting for device confirmation...'),
+        if (PoiseBleService.instance.isConnected &&
+            !PoiseBleService.instance.isModeSynchronized &&
+            !PoiseBleService.instance.commandPending)
+          TextButton(
+              onPressed: () =>
+                  PoiseBleService.instance.syncSavedModeToHardware(),
+              child: const Text('Retry synchronization')),
         // ── Session Elapsed Card ──
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
@@ -1947,11 +1941,16 @@ class _DashboardTabState extends State<DashboardTab> {
                       fit: BoxFit.scaleDown,
                       alignment: Alignment.centerLeft,
                       child: Text(
-                        _isSessionRunning
-                            ? (_isSessionPaused
-                                ? 'Session Paused'
-                                : 'Session Running')
-                            : 'Session Inactive',
+                        !PoiseBleService.instance.isConnected
+                            ? 'Session unavailable (disconnected)'
+                            : _isSessionRunning
+                                ? (_isSessionPaused
+                                    ? 'Session Paused'
+                                    : 'Session Running')
+                                : (PoiseBleService.instance.deviceState ==
+                                        PoiseDeviceState.calibrating
+                                    ? 'Calibrating... Hold still (about 3 seconds)'
+                                    : 'Session Inactive'),
                         style: const TextStyle(
                             color: Colors.black54,
                             fontSize: 11,
@@ -1973,7 +1972,7 @@ class _DashboardTabState extends State<DashboardTab> {
               if (_isSessionRunning) ...[
                 GestureDetector(
                   key: const ValueKey('session-pause-toggle'),
-                  onTap: _isBluetoothConnected
+                  onTap: PoiseBleService.instance.sessionControlsEnabled
                       ? (_isSessionPaused ? _resumeSession : _pauseSession)
                       : null,
                   behavior: HitTestBehavior.opaque,
@@ -2020,7 +2019,9 @@ class _DashboardTabState extends State<DashboardTab> {
               ],
               GestureDetector(
                 key: const ValueKey('session-toggle'),
-                onTap: _isBluetoothConnected ? _toggleSession : null,
+                onTap: PoiseBleService.instance.sessionControlsEnabled
+                    ? _toggleSession
+                    : null,
                 behavior: HitTestBehavior.opaque,
                 child: Container(
                   padding:
