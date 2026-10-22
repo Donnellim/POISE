@@ -75,6 +75,88 @@ void main() {
     expect(ble.hardwareActiveMode, ActivityMode.focus);
   });
 
+  test('every session snapshot is parsed, including unchanged IDs and zero',
+      () async {
+    await ble.connect(device);
+    ble.receiveMessage('STATE:MONITORING');
+    ble.receiveMessage('SESSION:SYNC:42,ELAPSED_MS:12500');
+    final first = ble.sessionSnapshot;
+    expect(first!.id, '42');
+    expect(first.elapsed.inMilliseconds, 12500);
+    ble.receiveMessage('SESSION:SYNC:42,ELAPSED_MS:42500');
+    expect(ble.deviceSessionSeconds, 42);
+    expect(identical(first, ble.sessionSnapshot), isFalse);
+    final latest = ble.sessionSnapshot;
+    for (final payload in ['-1', 'oops', '12.5', '']) {
+      ble.receiveMessage('SESSION:SYNC:42,ELAPSED_MS:$payload');
+      expect(identical(latest, ble.sessionSnapshot), isTrue);
+    }
+    ble.receiveMessage('SESSION:SYNC:42,ELAPSED_MS:0');
+    expect(ble.deviceSessionSeconds, 0);
+    ble.receiveMessage('SESSION:STARTED');
+    expect(ble.sessionSnapshot!.id, '42');
+  });
+
+  for (final sessionFirst in [true, false]) {
+    testWidgets(
+        'reconnection corrects same-session timer; session first: '
+        '$sessionFirst', (tester) async {
+      PoiseLocalDatabase.instance.mockRecordsForTesting = [];
+      addTearDown(
+          () => PoiseLocalDatabase.instance.mockRecordsForTesting = null);
+      tester.view.physicalSize = const Size(390, 1000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      var elapsed = 12000;
+      var state = 'MONITORING';
+      ble.commandWriter = (command) async {
+        commands.add(command);
+        if (command != 'STATE:SYNC') return;
+        void session() =>
+            ble.receiveMessage('SESSION:SYNC:42,ELAPSED_MS:$elapsed');
+        if (sessionFirst) session();
+        snapshot(state: state);
+        if (!sessionFirst) session();
+      };
+      // Snapshot arriving before the dashboard mounts must also be restored.
+      await ble.connect(device);
+      await tester.pumpWidget(const MaterialApp(
+          home: Scaffold(
+              body: DashboardTab(activeMode: ActivityMode.commuting))));
+      await tester.pump();
+      expect(find.text('00:00:12'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 2));
+      expect(find.text('00:00:14'), findsOneWidget);
+      await ble.disconnect();
+      await tester.pump(const Duration(seconds: 30));
+      expect(find.text('00:00:14'), findsOneWidget);
+      elapsed = 44000;
+      await ble.connect(device);
+      await tester.pump();
+      expect(commands, ['STATE:SYNC', 'STATE:SYNC']);
+      expect(find.text('00:00:44'), findsOneWidget);
+      ble.receiveMessage('SESSION:STARTED');
+      await tester.pump(const Duration(seconds: 2));
+      expect(find.text('00:00:46'), findsOneWidget);
+      // Even an identical snapshot must correct local extrapolation.
+      ble.receiveMessage('SESSION:SYNC:42,ELAPSED_MS:44000');
+      await tester.pump();
+      expect(find.text('00:00:44'), findsOneWidget);
+      await ble.disconnect();
+      elapsed = 47000;
+      state = 'PAUSED';
+      await ble.connect(device);
+      await tester.pump(const Duration(seconds: 5));
+      expect(find.text('00:00:47'), findsOneWidget);
+      expect(commands, ['STATE:SYNC', 'STATE:SYNC', 'STATE:SYNC']);
+      ble.receiveMessage('STATE:MONITORING');
+      await tester.pump(const Duration(seconds: 2));
+      expect(find.text('00:00:49'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+    });
+  }
+
   test('mode and vibration only change after corresponding acknowledgment',
       () async {
     await ble.connect(device);

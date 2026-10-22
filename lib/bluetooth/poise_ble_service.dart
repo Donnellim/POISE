@@ -109,6 +109,14 @@ enum PoiseDeviceState {
   error
 }
 
+/// Each notification is a fresh time anchor, even for the same session ID.
+class PoiseSessionSnapshot {
+  const PoiseSessionSnapshot(this.id, this.elapsed);
+
+  final String id;
+  final Duration elapsed;
+}
+
 /// Central Bluetooth Low Energy (BLE) service for scanning, connecting,
 /// and streaming live posture data from the POISE hardware.
 class PoiseBleService extends ChangeNotifier {
@@ -157,6 +165,19 @@ class PoiseBleService extends ChangeNotifier {
   }
 
   bool _handleProtocol(String message) {
+    if (message.startsWith('SESSION:SYNC:')) {
+      debugPrint('[PoiseBleService] RX FFE1 $message');
+      final match = RegExp(r'^SESSION:SYNC:([^,\s]+),ELAPSED_MS:([0-9]+)$')
+          .firstMatch(message);
+      final milliseconds = match == null ? null : int.tryParse(match[2]!);
+      if (milliseconds != null) {
+        _sessionSnapshot = PoiseSessionSnapshot(
+            match![1]!, Duration(milliseconds: milliseconds));
+        _deviceSessionSeconds = _sessionSnapshot!.elapsed.inSeconds;
+        _changed();
+      }
+      return true;
+    }
     final config =
         RegExp(r'^CONFIG:MODE:([1-4]),VIB:([01])$').firstMatch(message);
     if (config != null) {
@@ -181,6 +202,10 @@ class PoiseBleService extends ChangeNotifier {
       };
       if (states.containsKey(message)) {
         deviceState = states[message]!;
+        if (deviceState == PoiseDeviceState.idle) {
+          _sessionSnapshot = null;
+          _deviceSessionSeconds = 0;
+        }
         if (message.startsWith('STATE:')) _receivedState = true;
         if (deviceState == PoiseDeviceState.error ||
             deviceState == PoiseDeviceState.chargingLockout) {
@@ -224,6 +249,9 @@ class PoiseBleService extends ChangeNotifier {
     protocolError = null;
     _changed();
     try {
+      if (command == 'STATE:SYNC') {
+        debugPrint('[PoiseBleService] TX FFE2 STATE:SYNC');
+      }
       if (commandWriter != null) {
         await commandWriter!(command).timeout(responseTimeout);
       } else if (_calibrationChar != null) {
@@ -363,6 +391,8 @@ class PoiseBleService extends ChangeNotifier {
 
   int _deviceSessionSeconds = 0;
   int get deviceSessionSeconds => _deviceSessionSeconds;
+  PoiseSessionSnapshot? _sessionSnapshot;
+  PoiseSessionSnapshot? get sessionSnapshot => _sessionSnapshot;
 
   void updateDeviceSessionSeconds(int seconds) {
     if (seconds >= 0 && seconds <= 86400 && seconds != _deviceSessionSeconds) {
@@ -773,6 +803,7 @@ class PoiseBleService extends ChangeNotifier {
       _charValueSubscription =
           telemetryChar.onValueReceived.listen(_handleIncomingTelemetry);
       await telemetryChar.setNotifyValue(true);
+      debugPrint('[PoiseBleService] Subscribed to FFE1 notifications');
     } catch (e) {
       debugPrint('[PoiseBleService] Service discovery error: $e');
       rethrow;
@@ -1267,6 +1298,7 @@ class PoiseBleService extends ChangeNotifier {
     _zeroBaselineOffset = 0.0;
     _currentPitchAngle = 0.0;
     _deviceSessionSeconds = 0;
+    _sessionSnapshot = null;
     _batteryLevel = 100;
     _hardwareActiveMode = ActivityMode.normal;
     _phoneSavedMode = ActivityMode.normal;
