@@ -23,6 +23,7 @@ class DashboardTab extends StatefulWidget {
     this.onBluetoothChanged,
     this.triggerRecalibration = false,
     this.onRecalibrationHandled,
+    this.bluetoothSearchDuration = const Duration(seconds: 8),
   });
 
   final ActivityMode activeMode;
@@ -31,6 +32,7 @@ class DashboardTab extends StatefulWidget {
   final ValueChanged<bool>? onBluetoothChanged;
   final bool triggerRecalibration;
   final VoidCallback? onRecalibrationHandled;
+  final Duration bluetoothSearchDuration;
 
   @override
   State<DashboardTab> createState() => _DashboardTabState();
@@ -41,6 +43,8 @@ class _DashboardTabState extends State<DashboardTab> {
   bool _isBluetoothConnected = true;
   bool _isReconnecting = false;
   bool _isCalibrated = true;
+  Timer? _searchTimer;
+  StreamSubscription<List<PoiseDiscoveredDevice>>? _scanSub;
 
   // ── 2. Cloud Sync State (Separate & Independent) ──
   bool _isCloudSynced = true;
@@ -183,7 +187,7 @@ class _DashboardTabState extends State<DashboardTab> {
     if (!_isBluetoothConnected) return;
 
     if (!fromHardware) {
-      await PoiseBleService.instance.sendSessionCommand('SESSION:START');
+      await _showRecalibrationDialog(startSession: true);
       return;
     }
     final currentRaw = PoiseBleService.instance.rawPitchAngle;
@@ -652,6 +656,8 @@ class _DashboardTabState extends State<DashboardTab> {
     PoiseBleService.instance.protocolChanges.removeListener(_applyDeviceState);
     _bleBatterySub?.cancel();
     _sessionTimer?.cancel();
+    _searchTimer?.cancel();
+    _scanSub?.cancel();
     super.dispose();
   }
 
@@ -767,6 +773,21 @@ class _DashboardTabState extends State<DashboardTab> {
     setState(() => _isReconnecting = true);
     final ble = PoiseBleService.instance;
     try {
+      if (!await ble.requestBluetoothPermissions()) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: const Text(
+                'Allow Nearby devices (or Location on older phones) to find your P.O.I.S.E. device. Tap Bluetooth to retry.'),
+            action: SnackBarAction(
+                label: 'Settings',
+                onPressed: () {
+                  unawaited(ble.openBluetoothPermissionSettings());
+                }),
+          ));
+        }
+        return;
+      }
+      if (!mounted) return;
       if (!await ble.isBluetoothAdapterOn()) {
         if (!await ble.requestEnableBluetooth()) {
           if (mounted) {
@@ -784,19 +805,220 @@ class _DashboardTabState extends State<DashboardTab> {
       }
       if (!mounted) return;
       if (connected) {
-        setState(() {
-          _isBluetoothConnected = true;
-          _isSessionRunning = _isCalibrated;
-        });
+        _applyDeviceState();
         widget.onBluetoothChanged?.call(true);
       } else {
-        _showReconnectFailure();
+        await _startBluetoothSearchFlow();
       }
     } catch (_) {
       if (mounted) _showReconnectFailure();
     } finally {
       if (mounted) setState(() => _isReconnecting = false);
     }
+  }
+
+  Future<void> _startBluetoothSearchFlow() async {
+    _searchTimer?.cancel();
+    _scanSub?.cancel();
+    final ble = PoiseBleService.instance;
+
+    if (!mounted) return;
+
+    bool dialogClosed = false;
+
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      barrierColor: Colors.black.withValues(alpha: 0.6),
+      builder: (dialogContext) {
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          insetPadding: const EdgeInsets.symmetric(horizontal: 26),
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(24, 28, 24, 24),
+            decoration: BoxDecoration(
+              color: const Color(0xFF45A6B8),
+              borderRadius: BorderRadius.circular(24),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.25),
+                  blurRadius: 18,
+                  offset: const Offset(0, 8),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 68,
+                  height: 68,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.2),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: const [
+                      SizedBox(
+                        width: 58,
+                        height: 58,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 3,
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                            Color(0xFF0F1E29),
+                          ),
+                        ),
+                      ),
+                      Icon(
+                        Icons.bluetooth_searching_rounded,
+                        color: Color(0xFF0F1E29),
+                        size: 32,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 20),
+                const Text(
+                  'Searching for P.O.I.S.E. Device',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Color(0xFF0F1E29),
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  'Searching for POISE Device nearby...\nPlease ensure the device is powered on.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Color(0xFF0F1E29),
+                    fontSize: 13,
+                    height: 1.4,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                SizedBox(
+                  width: double.infinity,
+                  height: 44,
+                  child: ElevatedButton(
+                    onPressed: () {
+                      _searchTimer?.cancel();
+                      _scanSub?.cancel();
+                      ble.stopScan();
+                      dialogClosed = true;
+                      Navigator.pop(dialogContext);
+                      if (mounted) {
+                        setState(() {
+                          _isBluetoothConnected = false;
+                          _isReconnecting = false;
+                        });
+                      }
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF1E1E1E),
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(22),
+                      ),
+                    ),
+                    child: const Text(
+                      'Cancel',
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
+    Future<void> onConnectedSuccess() async {
+      if (!mounted) return;
+      setState(() {
+        _isBluetoothConnected = true;
+        _isReconnecting = false;
+      });
+      widget.onBluetoothChanged?.call(true);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('poise.bluetoothEnabled', true);
+      await prefs.setBool('poise.setupComplete', true);
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('P.O.I.S.E. device connected.'),
+          behavior: SnackBarBehavior.floating,
+          margin: EdgeInsets.only(bottom: 80, left: 16, right: 16),
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
+
+    _scanSub = ble.scanResultsStream.listen((devices) async {
+      if (!mounted || dialogClosed) return;
+      final poiseTarget = devices.cast<PoiseDiscoveredDevice?>().firstWhere(
+            (d) => d != null && PoiseBleConfig.isPoiseDeviceName(d.name),
+            orElse: () => null,
+          );
+      if (poiseTarget != null) {
+        dialogClosed = true;
+        _searchTimer?.cancel();
+        _scanSub?.cancel();
+        await ble.stopScan();
+        if (!mounted) return;
+        if (Navigator.of(context, rootNavigator: true).canPop()) {
+          Navigator.of(context, rootNavigator: true).pop();
+        }
+        final connected = await ble.connect(poiseTarget);
+        if (connected) {
+          await onConnectedSuccess();
+        } else {
+          if (mounted) _showReconnectFailure();
+        }
+      }
+    });
+
+    // Subscribe before starting discovery so the first result is not lost.
+    await ble.startScan(timeout: widget.bluetoothSearchDuration);
+    if (!mounted || dialogClosed) return;
+    _searchTimer = Timer(widget.bluetoothSearchDuration, () async {
+      if (!mounted || dialogClosed) return;
+      dialogClosed = true;
+      _scanSub?.cancel();
+      await ble.stopScan();
+      if (!mounted) return;
+      if (Navigator.of(context, rootNavigator: true).canPop()) {
+        Navigator.of(context, rootNavigator: true).pop();
+      }
+      dialogClosed = true;
+
+      final devices = ble.discoveredDevices;
+      final target = devices.cast<PoiseDiscoveredDevice?>().firstWhere(
+            (d) => d != null && PoiseBleConfig.isPoiseDeviceName(d.name),
+            orElse: () => null,
+          );
+
+      final connected = await ble.restoreConnection() ||
+          await ble.checkAndConnectSystemDevice() ||
+          (target != null && await ble.connect(target));
+
+      if (!mounted) return;
+      if (connected) {
+        await onConnectedSuccess();
+      } else {
+        _showReconnectFailure();
+      }
+    });
   }
 
   void _showReconnectFailure() {
@@ -1321,95 +1543,139 @@ class _DashboardTabState extends State<DashboardTab> {
   }
 
   // ── Recalibration Flow: Zero Baseline Dialog ──
-  Future<void> _showRecalibrationDialog() async {
+  Future<void> _showRecalibrationDialog({bool startSession = false}) async {
     if (!_isBluetoothConnected || _calibrationDialogOpen) return;
+    final ble = PoiseBleService.instance;
+    if (startSession &&
+        ble.deviceState != PoiseDeviceState.idle &&
+        ble.deviceState != PoiseDeviceState.calibrationReady) {
+      return;
+    }
     _calibrationDialogOpen = true;
-    setState(() {
-      _isCalibrated = false;
-      _isSessionRunning = false;
-    });
-    final confirmed = await showDialog<bool>(
+    final modal = showDialog<bool>(
       context: context,
       barrierDismissible: true,
       barrierColor: Colors.black.withValues(alpha: 0.6),
-      builder: (context) => Dialog(
-        backgroundColor: const Color(0xFFDCEEF6),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-        insetPadding: const EdgeInsets.symmetric(horizontal: 24),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 60,
-                height: 60,
-                decoration: const BoxDecoration(
-                  color: Color(0xFF4285F4),
-                  shape: BoxShape.circle,
+      builder: (context) => ListenableBuilder(
+        listenable: ble.protocolChanges,
+        builder: (context, _) => Dialog(
+          backgroundColor: const Color(0xFFDCEEF6),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+          insetPadding: const EdgeInsets.symmetric(horizontal: 24),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 60,
+                  height: 60,
+                  decoration: const BoxDecoration(
+                    color: Color(0xFF4285F4),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.sync_rounded,
+                    color: Colors.white,
+                    size: 34,
+                  ),
                 ),
-                child: const Icon(
-                  Icons.sync_rounded,
-                  color: Colors.white,
-                  size: 34,
+                const SizedBox(height: 18),
+                const Text(
+                  'Set Your Neutral Posture',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.black,
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 18),
-              const Text(
-                'Set Your Neutral Posture',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: Colors.black,
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
+                const SizedBox(height: 10),
+                Text(
+                  'Sit with your back straight, shoulders relaxed, and head facing forward.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.black.withValues(alpha: 0.8),
+                    fontSize: 13,
+                    height: 1.4,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 10),
-              Text(
-                'Sit with your back straight, shoulders relaxed, and head facing forward.',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: Colors.black.withValues(alpha: 0.8),
-                  fontSize: 13,
-                  height: 1.4,
-                ),
-              ),
-              const SizedBox(height: 26),
-              SizedBox(
-                width: double.infinity,
-                height: 48,
-                child: ElevatedButton(
-                  onPressed: () {
-                    Navigator.of(context).pop(true);
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF4285F4),
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(24),
-                      side: const BorderSide(color: Colors.black, width: 1),
+                const SizedBox(height: 26),
+                if (startSession && !ble.controlsEnabled)
+                  Text(ble.protocolError ?? 'Preparing device…',
+                      textAlign: TextAlign.center),
+                SizedBox(
+                  width: double.infinity,
+                  height: 48,
+                  child: ElevatedButton(
+                    onPressed: (!ble.controlsEnabled ||
+                            (startSession &&
+                                ble.deviceState !=
+                                    PoiseDeviceState.calibrationReady))
+                        ? null
+                        : () {
+                            Navigator.of(context).pop(true);
+                          },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF4285F4),
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(24),
+                        side: const BorderSide(color: Colors.black, width: 1),
+                      ),
+                    ),
+                    child: Text(
+                      startSession ? 'Set Calibration' : 'Set Zero Baseline',
+                      style: const TextStyle(
+                          fontSize: 15, fontWeight: FontWeight.bold),
                     ),
                   ),
-                  child: const Text(
-                    'Set Zero Baseline',
-                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
-                  ),
                 ),
-              ),
-              const SizedBox(height: 10),
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(),
-                child: const Text('Cancel',
-                    style: TextStyle(color: Colors.black87)),
-              ),
-            ],
+                const SizedBox(height: 10),
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('Cancel',
+                      style: TextStyle(color: Colors.black87)),
+                ),
+              ],
+            ),
           ),
         ),
       ),
     );
+    // Dispatch READY only for an explicitly opened new-session modal.
+    // Wait for its acknowledgment before allowing confirmation or cancellation.
+    final preparation = startSession
+        ? ble.sendSessionCommand('CALIBRATION:READY')
+        : Future.value(true);
+    final confirmed = await modal;
+    final prepared = await preparation;
     _calibrationDialogOpen = false;
-    if (!mounted || !_isBluetoothConnected || confirmed != true) return;
-    _showCalibratedOverlay();
+    if (startSession && confirmed != true) {
+      if (ble.isConnected &&
+          (ble.deviceState == PoiseDeviceState.calibrationReady ||
+              ble.deviceState == PoiseDeviceState.idle)) {
+        await ble.sendSessionCommand('CALIBRATION:CANCEL');
+      }
+      return;
+    }
+    if (!mounted || !ble.isConnected || confirmed != true || !prepared) return;
+    if (startSession) {
+      if (ble.deviceState != PoiseDeviceState.calibrationReady) return;
+      final success = await ble.sendSessionCommand('CALIBRATE');
+      if (!mounted) return;
+      if (success) {
+        widget.onBaselineSet?.call();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(ble.protocolError ??
+              'Could not start the session. Please retry.'),
+        ));
+      }
+    } else {
+      await _showCalibratedOverlay();
+    }
   }
 
   Future<void> _showCalibratedOverlay() async {

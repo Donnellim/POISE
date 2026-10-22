@@ -263,6 +263,8 @@ void main() {
       await tester.pump();
 
       // Session is now running
+      await tester.tap(find.text('Set Calibration'));
+      await tester.pump();
       expect(find.text('Session Running'), findsOneWidget);
       expect(find.text('End Session'), findsOneWidget);
 

@@ -21,7 +21,7 @@ class DashboardPage extends StatefulWidget {
     this.isGuest = false,
     this.requiresAccount = false,
     this.initialBluetoothConnected = true,
-    this.bluetoothSearchDuration = const Duration(milliseconds: 1200),
+    this.bluetoothSearchDuration = const Duration(seconds: 8),
     this.initialNotificationPermissionGranted = true,
     this.initialVibrationEnabled,
     this.initialPhoneNotificationEnabled,
@@ -208,6 +208,7 @@ class _DashboardPageState extends State<DashboardPage> {
         activeMode: activeMode,
         isBluetoothConnected: _isBluetoothConnected,
         onBluetoothChanged: _handleBluetoothChanged,
+        bluetoothSearchDuration: widget.bluetoothSearchDuration,
         triggerRecalibration: _triggerRecalibration,
         onRecalibrationHandled: () {
           setState(() => _triggerRecalibration = false);

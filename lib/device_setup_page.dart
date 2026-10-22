@@ -87,7 +87,11 @@ class DeviceSetupPage extends StatelessWidget {
                         onPressed: () {
                           Navigator.of(context).pushReplacement(
                             MaterialPageRoute<void>(
-                              builder: (_) => DeviceCheckPage(isGuest: isGuest),
+                              builder: (_) => isGuest
+                                  ? const DashboardPage(
+                                      isGuest: true,
+                                      initialBluetoothConnected: false)
+                                  : const DeviceCheckPage(),
                             ),
                           );
                         },

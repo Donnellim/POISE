@@ -34,6 +34,14 @@ class _GetStartedPageState extends State<GetStartedPage> {
 
     final ble = PoiseBleService.instance;
 
+    if (!await ble.requestBluetoothPermissions()) {
+      if (mounted) {
+        setState(() => _statusMessage =
+            'Allow Nearby devices (or Location on older phones) in app permissions, then try again.');
+      }
+      return;
+    }
+
     // 1. Check whether phone system Bluetooth is turned ON
     final isAdapterOn = await ble.isBluetoothAdapterOn();
     if (!isAdapterOn && mounted) {
