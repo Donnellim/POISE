@@ -2,7 +2,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'widgets/gradient_background.dart';
-import 'calibration_page.dart';
+import 'dashboard_page.dart';
 import 'bluetooth/poise_ble_service.dart';
 
 class GetStartedPage extends StatefulWidget {
@@ -41,7 +41,8 @@ class _GetStartedPageState extends State<GetStartedPage> {
       if (!allowed) {
         setState(() {
           _isConnecting = false;
-          _statusMessage = 'Bluetooth must be enabled to connect to your P.O.I.S.E. device.';
+          _statusMessage =
+              'Bluetooth must be enabled to connect to your P.O.I.S.E. device.';
         });
         return;
       }
@@ -229,7 +230,7 @@ class _GetStartedPageState extends State<GetStartedPage> {
               ),
               const SizedBox(height: 36),
 
-              // ── Proceed to Calibration ──
+              // ── Proceed to Dashboard ──
               SizedBox(
                 width: double.infinity,
                 height: 52,
@@ -238,8 +239,7 @@ class _GetStartedPageState extends State<GetStartedPage> {
                     Navigator.of(context).pop(); // close dialog
                     Navigator.of(context).push(
                       MaterialPageRoute(
-                        builder: (_) =>
-                            CalibrationPage(isGuest: widget.isGuest),
+                        builder: (_) => DashboardPage(isGuest: widget.isGuest),
                       ),
                     );
                   },
@@ -252,7 +252,7 @@ class _GetStartedPageState extends State<GetStartedPage> {
                     ),
                   ),
                   child: const Text(
-                    'Proceed to Calibration',
+                    'Proceed to Dashboard',
                     style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.bold,
@@ -285,8 +285,8 @@ class _GetStartedPageState extends State<GetStartedPage> {
                 Align(
                   alignment: Alignment.topLeft,
                   child: IconButton(
-                    icon:
-                        const Icon(Icons.arrow_back, color: Colors.black, size: 28),
+                    icon: const Icon(Icons.arrow_back,
+                        color: Colors.black, size: 28),
                     onPressed: () => Navigator.of(context).pop(),
                   ),
                 )

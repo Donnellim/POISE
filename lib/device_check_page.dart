@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'bluetooth/poise_ble_service.dart';
-import 'calibration_page.dart';
+
 import 'widgets/gradient_background.dart';
 import 'device_setup_page.dart';
 import 'dashboard_page.dart';
@@ -71,7 +71,7 @@ class _DeviceCheckPageState extends State<DeviceCheckPage> {
                                   if (!context.mounted) return;
                                   Navigator.of(context).pushReplacement(
                                     MaterialPageRoute(
-                                      builder: (_) => CalibrationPage(
+                                      builder: (_) => DashboardPage(
                                           isGuest: widget.isGuest),
                                     ),
                                   );

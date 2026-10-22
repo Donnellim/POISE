@@ -1,3 +1,5 @@
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_application_1/bluetooth/poise_ble_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_application_1/feedback_preferences.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -8,10 +10,15 @@ import 'package:flutter_application_1/tabs/profile_tab.dart';
 import 'package:flutter_application_1/database/local_database.dart';
 
 void main() {
-  setUp(() {
+  setUp(() async {
     FeedbackPreferences.vibration = true;
     FeedbackPreferences.phoneNotification = false;
     PoiseLocalDatabase.instance.mockRecordsForTesting = [];
+    SharedPreferences.setMockInitialValues({});
+    PoiseBleService.instance.resetForTesting();
+    PoiseBleService.instance.simulateForTesting = true;
+    await PoiseBleService.instance.connect(const PoiseDiscoveredDevice(
+        id: 'SIMULATED-TEST', name: 'POISE', rssi: -50));
   });
 
   tearDown(() {

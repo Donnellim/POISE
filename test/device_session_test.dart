@@ -1,6 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_application_1/calibration_page.dart';
 import 'package:flutter_application_1/get_started_page.dart';
 import 'package:flutter_application_1/session_entry_page.dart';
 import 'package:flutter_application_1/device_check_page.dart';
@@ -45,7 +44,7 @@ void main() {
     expect(find.byType(DeviceCheckPage), findsNothing);
     expect(ble.isConnected, true);
     expect(ble.connectedDeviceName, 'POISE saved');
-    expect(ble.zeroBaselineOffset, 7);
+    expect(ble.zeroBaselineOffset, 0); // Firmware owns the calibrated baseline.
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -110,7 +109,7 @@ void main() {
 
     // Must route to DeviceCheckPage, NOT DashboardPage
     expect(find.byType(DeviceCheckPage), findsOneWidget);
-    expect(find.byType(DashboardPage), findsNothing);
+    expect(ble.deviceState, PoiseDeviceState.idle);
   });
 
   test('mobile refuses fabricated device connections', () async {
@@ -125,7 +124,7 @@ void main() {
   });
 
   testWidgets(
-      'connecting via Quick Settings panel routes directly to CalibrationPage upon login',
+      'connecting via Quick Settings panel routes directly to DashboardPage upon login',
       (tester) async {
     final ble = PoiseBleService.instance;
     ble.simulateForTesting = true;
@@ -135,14 +134,15 @@ void main() {
     await tester.pumpWidget(const MaterialApp(home: SessionEntryPage()));
     await tester.pumpAndSettle();
 
-    // Must route straight to CalibrationPage, bypassing DeviceCheckPage
-    expect(find.byType(CalibrationPage), findsOneWidget);
+    // Must route straight to DashboardPage, bypassing DeviceCheckPage
+    expect(find.byType(DashboardPage), findsOneWidget);
     expect(find.byType(DeviceCheckPage), findsNothing);
-    expect(find.byType(DashboardPage), findsNothing);
+    expect(ble.deviceState, PoiseDeviceState.idle);
     expect(ble.isConnected, true);
   });
 
-  test('requestEnableBluetooth returns true immediately if adapter is already on',
+  test(
+      'requestEnableBluetooth returns true immediately if adapter is already on',
       () async {
     final ble = PoiseBleService.instance;
     ble.simulateForTesting = true;
@@ -152,7 +152,7 @@ void main() {
   });
 
   testWidgets(
-      'GetStartedPage Connect to Bluetooth automatically finds and connects POISE device, navigating to CalibrationPage',
+      'GetStartedPage Connect to Bluetooth automatically finds and connects POISE device, navigating to DashboardPage',
       (tester) async {
     final ble = PoiseBleService.instance;
     ble.simulateForTesting = true;
@@ -172,22 +172,16 @@ void main() {
     await tester.pumpAndSettle();
 
     // Connected modal appears
-    expect(find.text('Proceed to Calibration'), findsOneWidget);
+    expect(find.text('Proceed to Dashboard'), findsOneWidget);
     expect(ble.isConnected, true);
 
-    // Tap Proceed to Calibration
-    await tester.tap(find.text('Proceed to Calibration'));
+    // Tap Proceed to Dashboard
+    await tester.tap(find.text('Proceed to Dashboard'));
     await tester.pumpAndSettle();
 
-    expect(find.byType(CalibrationPage), findsOneWidget);
+    expect(find.byType(DashboardPage), findsOneWidget);
 
-    // Tapping Cancel on CalibrationPage returns back to GetStartedPage
-    expect(find.text('Cancel'), findsOneWidget);
-    await tester.tap(find.text('Cancel'));
-    await tester.pumpAndSettle();
-
-    expect(find.byType(GetStartedPage), findsOneWidget);
-    expect(find.byType(CalibrationPage), findsNothing);
+    expect(ble.deviceState, PoiseDeviceState.idle);
+    expect(find.text('Start Session'), findsOneWidget);
   });
 }
-

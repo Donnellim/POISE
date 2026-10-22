@@ -108,7 +108,7 @@ void main() {
   });
 
   testWidgets(
-      'Guest setup No preserves guest status; Yes follows normal setup through calibration',
+      'Guest setup No preserves guest status; Yes follows normal setup to idle dashboard',
       (tester) async {
     await start(tester, const DeviceCheckPage(isGuest: true));
     for (var i = 0; i < 3; i++) {
@@ -132,10 +132,6 @@ void main() {
         true);
     await tester.tap(find.text('Connect to Bluetooth'));
     await tester.pump(const Duration(seconds: 4));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Proceed to Calibration'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Set Zero Baseline'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Proceed to Dashboard'));
     await tester.pumpAndSettle();

@@ -76,9 +76,11 @@ class _DashboardPageState extends State<DashboardPage> {
       if (mounted) setState(() {});
     });
 
-    _activeMode = widget.initialActiveMode;
+    PoiseBleService.instance.protocolChanges.addListener(_protocolChanged);
+    _activeMode = PoiseBleService.instance.phoneSavedMode;
     ModePreferences.getSavedMode().then((mode) {
       if (mounted &&
+          !PoiseBleService.instance.isModeSynchronized &&
           widget.initialActiveMode == ActivityMode.normal &&
           mode != _activeMode) {
         setState(() {
@@ -87,11 +89,12 @@ class _DashboardPageState extends State<DashboardPage> {
       }
     });
 
-    _isBluetoothConnected = widget.initialBluetoothConnected;
+    _isBluetoothConnected = PoiseBleService.instance.isConnected;
     _notificationPermissionGranted =
         widget.initialNotificationPermissionGranted;
-    _vibrationEnabled =
-        widget.initialVibrationEnabled ?? FeedbackPreferences.vibration;
+    _vibrationEnabled = PoiseBleService.instance.isModeSynchronized
+        ? PoiseBleService.instance.vibrationEnabled
+        : (widget.initialVibrationEnabled ?? FeedbackPreferences.vibration);
     _phoneNotificationEnabled = widget.initialPhoneNotificationEnabled ??
         FeedbackPreferences.phoneNotification;
 
@@ -118,6 +121,7 @@ class _DashboardPageState extends State<DashboardPage> {
 
   @override
   void dispose() {
+    PoiseBleService.instance.protocolChanges.removeListener(_protocolChanged);
     _connectionSubscription?.cancel();
     _modeSubscription?.cancel();
     _modeSyncSubscription?.cancel();
@@ -166,12 +170,23 @@ class _DashboardPageState extends State<DashboardPage> {
     });
   }
 
-  void _handleVibrationChanged(bool enabled) {
+  void _protocolChanged() {
+    if (!mounted) return;
     setState(() {
-      _vibrationEnabled = enabled;
+      _activeMode = PoiseBleService.instance.phoneSavedMode;
+      _vibrationEnabled = PoiseBleService.instance.vibrationEnabled;
+      _isBluetoothConnected = PoiseBleService.instance.isConnected;
     });
-    FeedbackPreferences.saveVibration(enabled);
-    PoiseBleService.instance.sendVibrationCommand(enabled);
+  }
+
+  Future<void> _handleVibrationChanged(bool enabled) async {
+    final accepted =
+        await PoiseBleService.instance.sendVibrationCommand(enabled);
+    if (!mounted || !accepted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(enabled
+            ? 'Device vibration feedback enabled.'
+            : 'Device vibration feedback disabled.')));
   }
 
   void _handlePhoneNotificationChanged(bool enabled) {
@@ -204,7 +219,6 @@ class _DashboardPageState extends State<DashboardPage> {
         selectedMode: activeMode,
         isBluetoothConnected: _isBluetoothConnected,
         onModeChanged: (mode) {
-          setState(() => _activeMode = mode);
           PoiseBleService.instance.sendModeCommand(mode);
         },
         vibrationEnabled: _vibrationEnabled,

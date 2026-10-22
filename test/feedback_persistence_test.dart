@@ -1,3 +1,4 @@
+import 'package:flutter_application_1/bluetooth/poise_ble_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -11,6 +12,10 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     PoiseLocalDatabase.instance.mockRecordsForTesting = [];
     await FeedbackPreferences.load();
+    PoiseBleService.instance.resetForTesting();
+    PoiseBleService.instance.simulateForTesting = true;
+    await PoiseBleService.instance.connect(const PoiseDiscoveredDevice(
+        id: 'SIMULATED-TEST', name: 'POISE', rssi: -50));
   });
 
   tearDown(() {
@@ -73,8 +78,8 @@ void main() {
 
     // Verify independent preferences persistence across app reloads
     await tester.pumpWidget(const SizedBox());
-    FeedbackPreferences.saveVibration(true);
-    FeedbackPreferences.savePhoneNotification(true);
+    await PoiseBleService.instance.sendVibrationCommand(true);
+    await FeedbackPreferences.savePhoneNotification(true);
     await FeedbackPreferences.load();
     expect(FeedbackPreferences.vibration, true);
     expect(FeedbackPreferences.phoneNotification, true);
