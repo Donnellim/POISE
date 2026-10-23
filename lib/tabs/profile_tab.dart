@@ -1623,7 +1623,7 @@ class _ProfileTabState extends State<ProfileTab> {
                     ),
                     const SizedBox(height: 12),
                     const Text(
-                      'Version 1.0.0',
+                      'Version 1.0.0+3',
                       style: TextStyle(
                         color: Color(0xFF0F1E29),
                         fontSize: 11,

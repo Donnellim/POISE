@@ -24,82 +24,142 @@ class DevicePostureEvent {
     'end_reason'
   ];
 
-  static bool _isValidId(dynamic value) {
-    if (value == null) return false;
-    if (value is int) return true;
-    if (value is String) {
-      return value.isNotEmpty && !RegExp(r'[\r\n\x00]').hasMatch(value);
-    }
-    return false;
-  }
+  factory DevicePostureEvent.parse(Map<String, dynamic> json,
+      {String? rawPayload}) {
+    final rawText = rawPayload ?? json.toString();
 
-  static bool _isValidTimestamp(dynamic value) {
-    if (value == null) return true;
-    if (value is int) {
-      return value >= 0 && value <= 8640000000000000;
-    }
-    if (value is num) {
-      final v = value.toInt();
-      return v >= 0 && v <= 8640000000000000 && value == v;
-    }
-    return false;
-  }
-
-  factory DevicePostureEvent.parse(Map<String, dynamic> json) {
-    void require(bool valid, String reason) {
+    void require(bool valid, String field, String expected, dynamic actual) {
       if (!valid) {
-        debugPrint(
-            '[DevicePostureEvent] Validation failed: $reason (payload: $json)');
-        throw FormatException('Invalid final posture event: $reason');
+        final diagnostic =
+            'Invalid final posture event: field "$field" failed validation. Expected $expected, but got: $actual (${actual?.runtimeType}). Raw payload: $rawText';
+        debugPrint('[DevicePostureEvent] $diagnostic');
+        throw FormatException(diagnostic);
       }
     }
 
-    require(json['is_final'] == true, 'is_final must be true');
-    require(json['schema_version'] == 1, 'schema_version must be 1');
+    final isFinal = json['is_final'] == true || json['is_final'] == 'true';
+    require(isFinal, 'is_final', 'true (boolean)', json['is_final']);
+
+    final rawSchema = json['schema_version'];
+    final schemaVersion = rawSchema is int
+        ? rawSchema
+        : int.tryParse(rawSchema?.toString() ?? '');
+    require(schemaVersion == 1, 'schema_version', '1 (integer)', rawSchema);
+
+    final rawDeviceId = json['device_id'];
+    final deviceId = rawDeviceId?.toString() ?? '';
+    require(rawDeviceId != null && deviceId.isNotEmpty, 'device_id',
+        'non-empty string', rawDeviceId);
+
+    final rawEventId = json['event_id'];
+    final isValidEventId = rawEventId != null &&
+        rawEventId.toString().isNotEmpty &&
+        !RegExp(r'[\r\n\x00]').hasMatch(rawEventId.toString());
+    require(isValidEventId, 'event_id',
+        'non-empty string or integer without control characters', rawEventId);
+
+    final rawSessionId = json['session_id'];
+    final isValidSessionId = rawSessionId != null &&
+        rawSessionId.toString().isNotEmpty &&
+        !RegExp(r'[\r\n\x00]').hasMatch(rawSessionId.toString());
+    require(isValidSessionId, 'session_id', 'non-empty string or integer',
+        rawSessionId);
+
     require(
-        json['device_id'] is String && (json['device_id'] as String).isNotEmpty,
-        'device_id must be a non-empty string');
-    require(_isValidId(json['event_id']),
-        'event_id must be a valid non-empty string or integer');
-    require(!RegExp(r'[\r\n\x00]').hasMatch(json['event_id'].toString()),
-        'event_id contains invalid control characters');
-    require(_isValidId(json['session_id']),
-        'session_id must be a valid non-empty string or integer');
+        json.containsKey('start_time_ms'),
+        'start_time_ms',
+        'key must exist in payload (nullable UTC milliseconds)',
+        json['start_time_ms']);
+    final rawStartTime = json['start_time_ms'];
+    final int? startTime = rawStartTime == null
+        ? null
+        : (rawStartTime is int
+            ? rawStartTime
+            : int.tryParse(rawStartTime.toString()));
     require(
-        json['end_reason'] is String && (json['end_reason'] as String).isNotEmpty,
-        'end_reason must be a non-empty string');
+        rawStartTime == null ||
+            (startTime != null &&
+                startTime >= 0 &&
+                startTime <= 8640000000000000),
+        'start_time_ms',
+        'null or valid 64-bit UTC millisecond timestamp (0 to 8640000000000000)',
+        rawStartTime);
+
     require(
-        json.containsKey('start_time_ms') &&
-            _isValidTimestamp(json['start_time_ms']),
-        'start_time_ms must be null or valid 64-bit millisecond timestamp');
+        json.containsKey('end_time_ms'),
+        'end_time_ms',
+        'key must exist in payload (nullable UTC milliseconds)',
+        json['end_time_ms']);
+    final rawEndTime = json['end_time_ms'];
+    final int? endTime = rawEndTime == null
+        ? null
+        : (rawEndTime is int
+            ? rawEndTime
+            : int.tryParse(rawEndTime.toString()));
     require(
-        json.containsKey('end_time_ms') &&
-            _isValidTimestamp(json['end_time_ms']),
-        'end_time_ms must be null or valid 64-bit millisecond timestamp');
-    require(['synced', 'unknown'].contains(json['timestamp_status']),
-        'timestamp_status must be "synced" or "unknown"');
-    require(
-        json['mode_id'] is int &&
-            (json['mode_id'] as int) >= 1 &&
-            (json['mode_id'] as int) <= 4,
-        'mode_id must be an integer between 1 and 4');
-    require(
-        json['vibration_count'] is int &&
-            (json['vibration_count'] as int) >= 0,
-        'vibration_count must be a non-negative integer');
-    require(
-        json['peak_deviation_deg'] is num &&
-            (json['peak_deviation_deg'] as num).isFinite,
-        'peak_deviation_deg must be a finite number');
-    require(['corrected', 'interrupted'].contains(json['correction_status']),
-        'correction_status must be "corrected" or "interrupted"');
-    if (json['start_time_ms'] != null && json['end_time_ms'] != null) {
-      require(
-          (json['end_time_ms'] as num) >= (json['start_time_ms'] as num),
-          'end_time_ms must be >= start_time_ms');
+        rawEndTime == null ||
+            (endTime != null && endTime >= 0 && endTime <= 8640000000000000),
+        'end_time_ms',
+        'null or valid 64-bit UTC millisecond timestamp (0 to 8640000000000000)',
+        rawEndTime);
+
+    if (startTime != null && endTime != null) {
+      require(endTime >= startTime, 'end_time_ms', '>= start_time_ms ($startTime)',
+          endTime);
     }
 
-    return DevicePostureEvent._({for (final key in fields) key: json[key]});
+    final rawTsStatus = json['timestamp_status'];
+    final tsStatus = rawTsStatus?.toString();
+    require(tsStatus == 'synced' || tsStatus == 'unknown', 'timestamp_status',
+        '"synced" or "unknown"', rawTsStatus);
+
+    final rawModeId = json['mode_id'];
+    final modeId = rawModeId is int
+        ? rawModeId
+        : int.tryParse(rawModeId?.toString() ?? '');
+    require(modeId != null && modeId >= 1 && modeId <= 4, 'mode_id',
+        'integer between 1 and 4', rawModeId);
+
+    final rawPeak = json['peak_deviation_deg'];
+    final num? peak = rawPeak is num
+        ? rawPeak
+        : num.tryParse(rawPeak?.toString() ?? '');
+    require(peak != null && peak.isFinite, 'peak_deviation_deg',
+        'finite number (double or int)', rawPeak);
+
+    final rawVib = json['vibration_count'];
+    final vib = rawVib is int
+        ? rawVib
+        : int.tryParse(rawVib?.toString() ?? '');
+    require(vib != null && vib >= 0, 'vibration_count', 'non-negative integer',
+        rawVib);
+
+    final rawCorrStatus = json['correction_status'];
+    final corrStatus = rawCorrStatus?.toString();
+    require(corrStatus == 'corrected' || corrStatus == 'interrupted',
+        'correction_status', '"corrected" or "interrupted"', rawCorrStatus);
+
+    final rawEndReason = json['end_reason'];
+    final endReason = rawEndReason?.toString() ?? '';
+    require(rawEndReason != null && endReason.isNotEmpty, 'end_reason',
+        'non-empty string (e.g. "posture_corrected")', rawEndReason);
+
+    final map = <String, dynamic>{
+      'schema_version': schemaVersion,
+      'event_id': rawEventId,
+      'device_id': deviceId,
+      'session_id': rawSessionId,
+      'start_time_ms': startTime,
+      'end_time_ms': endTime,
+      'timestamp_status': tsStatus,
+      'mode_id': modeId,
+      'peak_deviation_deg': peak is double ? peak : peak!.toDouble(),
+      'vibration_count': vib,
+      'correction_status': corrStatus,
+      'end_reason': endReason,
+    };
+
+    return DevicePostureEvent._(map);
   }
 
   int? get durationMs =>
