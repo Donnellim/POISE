@@ -4,11 +4,14 @@ import 'package:shared_preferences/shared_preferences.dart';
 class FeedbackPreferences {
   static bool vibration = true;
   static bool phoneNotification = false;
+  static bool hasExplicitVibrationPreference = false;
   static SharedPreferences? _preferences;
 
   static Future<void> load() async {
     try {
       _preferences = await SharedPreferences.getInstance();
+      hasExplicitVibrationPreference =
+          _preferences?.containsKey('poise.vibration') ?? false;
       vibration = _preferences?.getBool('poise.vibration') ?? true;
       phoneNotification =
           _preferences?.getBool('poise.phoneNotification') ?? false;
@@ -23,6 +26,7 @@ class FeedbackPreferences {
 
   static Future<void> saveVibration(bool value) async {
     vibration = value;
+    hasExplicitVibrationPreference = true;
     try {
       await _preferences?.setBool('poise.vibration', value);
     } catch (_) {}

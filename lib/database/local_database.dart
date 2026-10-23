@@ -1065,7 +1065,9 @@ class PoiseLocalDatabase {
   }
 
   Future<void> clearPostureData() async {
+    mockRecordsForTesting?.clear();
     final db = await database;
+    await db.delete('device_posture_events');
     await db.delete('posture_events');
     await db.delete('sessions');
     await db.delete('devices');
@@ -1073,8 +1075,9 @@ class PoiseLocalDatabase {
   }
 
   Future<void> clearAllData() async {
-    await (await database).delete('device_posture_events');
+    mockRecordsForTesting?.clear();
     final db = await database;
+    await db.delete('device_posture_events');
     await db.delete('posture_events');
     await db.delete('sessions');
     await db.delete('devices');

@@ -361,13 +361,15 @@ void main() {
   });
 
   testWidgets('guest mode renders exact Step 21 event in SQLite-backed AnalyticsTab', (tester) async {
+    final now = DateTime.now();
+    final startMs = now.subtract(const Duration(minutes: 5)).millisecondsSinceEpoch;
     final payload = {
       'schema_version': 1,
       'event_id': 2132996330,
       'device_id': 'POISE-A560D578',
       'session_id': 2548296016,
-      'start_time_ms': 1792754469621,
-      'end_time_ms': 1792754476627,
+      'start_time_ms': startMs,
+      'end_time_ms': startMs + 7006,
       'timestamp_status': 'synced',
       'mode_id': 1,
       'peak_deviation_deg': 29.1,
@@ -404,13 +406,16 @@ void main() {
   });
 
   testWidgets('Analytics aggregates two finalized imported posture events without inflation from diagnostic records', (tester) async {
+    final now = DateTime.now();
+    final startMs1 = now.subtract(const Duration(minutes: 5)).millisecondsSinceEpoch;
+    final startMs2 = now.subtract(const Duration(minutes: 4)).millisecondsSinceEpoch;
     final payload1 = {
       'schema_version': 1,
       'event_id': 2132996330,
       'device_id': 'POISE-A560D578',
       'session_id': 2548296016,
-      'start_time_ms': 1792754469621,
-      'end_time_ms': 1792754476627,
+      'start_time_ms': startMs1,
+      'end_time_ms': startMs1 + 7006,
       'timestamp_status': 'synced',
       'mode_id': 1,
       'peak_deviation_deg': 29.1,
@@ -424,8 +429,8 @@ void main() {
       'event_id': 2132996331,
       'device_id': 'POISE-A560D578',
       'session_id': 2548296016,
-      'start_time_ms': 1792754480000,
-      'end_time_ms': 1792754485800,
+      'start_time_ms': startMs2,
+      'end_time_ms': startMs2 + 5800,
       'timestamp_status': 'synced',
       'mode_id': 1,
       'peak_deviation_deg': 24.5,
@@ -438,7 +443,6 @@ void main() {
     final local = PoiseLocalDatabase.instance;
     await tester.runAsync(() async {
       await local.init(customPath: ':memory:');
-      final now = DateTime.now();
       // Insert a live session with diagnostic posture events
       await local.insertSession(SessionModel(
         id: 'sess_diag_1',

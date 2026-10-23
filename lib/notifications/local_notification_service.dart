@@ -189,6 +189,14 @@ class LocalNotificationService {
     );
   }
 
+  /// Cancels any active posture alert notification (e.g. upon posture correction,
+  /// session pause/end, or device disconnect).
+  Future<void> cancelPostureAlert() async {
+    try {
+      await _plugin.cancel(id: 1001);
+    } catch (_) {}
+  }
+
   /// Triggers a device status notification (e.g. Disconnected, Low Battery).
   Future<void> showDeviceNotice({
     required int id,

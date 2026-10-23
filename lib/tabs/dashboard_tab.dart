@@ -12,6 +12,8 @@ import '../database/models.dart';
 import '../database/sync_service.dart';
 import '../database/network_service.dart';
 import '../auth/social_auth.dart';
+import '../notifications/local_notification_service.dart';
+import '../feedback_preferences.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class DashboardTab extends StatefulWidget {
@@ -57,6 +59,10 @@ class _DashboardTabState extends State<DashboardTab> {
   // ── 4. Slouch Correction Tracking ──
   DateTime? _activeSlouchStartTime;
   double _peakSlouchAngle = 0.0;
+  bool _hardwareSlouchAlert = false;
+  DateTime? _postureCorrectedAt;
+  bool _hasDispatchedNotificationForEvent = false;
+  StreamSubscription<String>? _bleHardwarePostureSub;
 
   bool get _isSlouchActive =>
       _isSessionRunning &&
@@ -65,10 +71,9 @@ class _DashboardTabState extends State<DashboardTab> {
       _livePostureAngle!.abs() > widget.activeMode.angle;
 
   bool get _isSlouchAlert {
+    if (!_isSessionRunning || _isSessionPaused) return false;
+    if (_hardwareSlouchAlert) return true;
     if (!_isSlouchActive) return false;
-    final angle = _livePostureAngle!.abs();
-    // Severe posture deviation triggers critical alert immediately
-    if (angle > widget.activeMode.angle + 8.0) return true;
     if (_activeSlouchStartTime == null) return false;
     final elapsedSec =
         DateTime.now().difference(_activeSlouchStartTime!).inMilliseconds /
@@ -79,6 +84,22 @@ class _DashboardTabState extends State<DashboardTab> {
   bool get _isSlouchWarning {
     if (!_isSlouchActive) return false;
     return !_isSlouchAlert;
+  }
+
+  bool get _isPostureRecentlyCorrected {
+    if (_isSlouchActive || _isSlouchAlert || !_isSessionRunning || _isSessionPaused) {
+      return false;
+    }
+    if (_postureCorrectedAt == null) return false;
+    return DateTime.now().difference(_postureCorrectedAt!).inSeconds < 4;
+  }
+
+  Color get _postureTextColor {
+    final hasReading = _canMonitor && !_isSessionPaused && _livePostureAngle != null;
+    if (!hasReading) return Colors.white;
+    if (_isSlouchAlert) return const Color(0xFFFF1744); // Red: confirmed posture alert
+    if (_isSlouchWarning) return const Color(0xFFFF9100); // Orange: dwell timer counting
+    return const Color(0xFF00E676); // Green: optimal posture
   }
 
   // ── 5. Session Elapsed Timer & Controls ──
@@ -233,6 +254,9 @@ class _DashboardTabState extends State<DashboardTab> {
   void _pauseSession({bool fromHardware = false}) {
     if (!_isSessionRunning || _isSessionPaused) return;
     _sessionTimer?.cancel();
+    _hasDispatchedNotificationForEvent = false;
+    unawaited(LocalNotificationService.instance.cancelPostureAlert());
+    _hardwareSlouchAlert = false;
     if (!fromHardware) {
       PoiseBleService.instance.sendSessionCommand('SESSION:PAUSE');
       return;
@@ -372,6 +396,9 @@ class _DashboardTabState extends State<DashboardTab> {
   bool get _shouldTrackDatabaseSession => !PoiseBleService.instance.isTesting;
 
   void _closeCurrentSession() {
+    _hasDispatchedNotificationForEvent = false;
+    unawaited(LocalNotificationService.instance.cancelPostureAlert());
+    _hardwareSlouchAlert = false;
     if (_activeSlouchStartTime != null) {
       final now = DateTime.now();
       final correctionTime =
@@ -470,6 +497,33 @@ class _DashboardTabState extends State<DashboardTab> {
       }
     });
 
+    _bleHardwarePostureSub =
+        PoiseBleService.instance.hardwarePostureStream.listen((msg) {
+      if (!mounted) return;
+      if (msg == 'POSTURE:ALERT' || msg == 'POSTURE:SLOUCH') {
+        setState(() {
+          _hardwareSlouchAlert = true;
+          if (!_hasDispatchedNotificationForEvent) {
+            _hasDispatchedNotificationForEvent = true;
+            if (FeedbackPreferences.phoneNotification) {
+              LocalNotificationService.instance.showPostureAlert(
+                title: 'Posture Alert',
+                body: 'Slouch detected. Return to your correct posture.',
+              );
+            }
+            NotificationScope.of(context)?.add(PoiseNoticeType.alert);
+          }
+        });
+      } else if (msg == 'POSTURE:CORRECTED' || msg == 'POSTURE:OK') {
+        setState(() {
+          _hardwareSlouchAlert = false;
+          _postureCorrectedAt = DateTime.now();
+          _hasDispatchedNotificationForEvent = false;
+          unawaited(LocalNotificationService.instance.cancelPostureAlert());
+        });
+      }
+    });
+
     _blePitchSub = PoiseBleService.instance.pitchAngleStream.listen((angle) {
       if (mounted && _canMonitor) {
         if (_isSessionPaused) {
@@ -488,13 +542,7 @@ class _DashboardTabState extends State<DashboardTab> {
                 // Posture deviation detected: start tracking duration and peak angle
                 _activeSlouchStartTime = now;
                 _peakSlouchAngle = clampedAngle;
-
-                if (_lastAlertNotificationTime == null ||
-                    now.difference(_lastAlertNotificationTime!) >
-                        const Duration(seconds: 15)) {
-                  _lastAlertNotificationTime = now;
-                  NotificationScope.of(context)?.add(PoiseNoticeType.alert);
-                }
+                _postureCorrectedAt = null;
 
                 if (_currentSessionId == null) {
                   _currentSessionId = 'sess_${now.millisecondsSinceEpoch}';
@@ -506,18 +554,45 @@ class _DashboardTabState extends State<DashboardTab> {
                   _peakSlouchAngle = clampedAngle;
                 }
               }
+
+              // Evaluate dwell time requirement
+              final elapsedSec =
+                  now.difference(_activeSlouchStartTime!).inMilliseconds / 1000.0;
+              if (elapsedSec >= widget.activeMode.seconds || _hardwareSlouchAlert) {
+                if (!_hasDispatchedNotificationForEvent) {
+                  _hasDispatchedNotificationForEvent = true;
+                  if (FeedbackPreferences.phoneNotification) {
+                    LocalNotificationService.instance.showPostureAlert(
+                      title: 'Posture Alert',
+                      body: 'Slouch detected. Return to your correct posture.',
+                    );
+                  }
+                  if (_lastAlertNotificationTime == null ||
+                      now.difference(_lastAlertNotificationTime!) >
+                          const Duration(seconds: 15)) {
+                    _lastAlertNotificationTime = now;
+                    NotificationScope.of(context)?.add(PoiseNoticeType.alert);
+                  }
+                }
+              }
             } else {
               // User corrected posture! 1 posture event = improper posture detected -> corrected.
-              if (_activeSlouchStartTime != null) {
+              if (_activeSlouchStartTime != null || _hardwareSlouchAlert) {
                 final correctedAt = now;
-                final correctionTime = correctedAt
-                        .difference(_activeSlouchStartTime!)
-                        .inMilliseconds /
-                    1000.0;
-                final occurredAt = _activeSlouchStartTime!;
+                final correctionTime = _activeSlouchStartTime != null
+                    ? correctedAt
+                            .difference(_activeSlouchStartTime!)
+                            .inMilliseconds /
+                        1000.0
+                    : 1.0;
+                final occurredAt = _activeSlouchStartTime ?? now;
                 final peakAngle = _peakSlouchAngle;
                 _activeSlouchStartTime = null;
                 _peakSlouchAngle = 0.0;
+                _hardwareSlouchAlert = false;
+                _postureCorrectedAt = correctedAt;
+                _hasDispatchedNotificationForEvent = false;
+                unawaited(LocalNotificationService.instance.cancelPostureAlert());
 
                 if (_currentSessionId == null) {
                   _currentSessionId = 'sess_${now.millisecondsSinceEpoch}';
@@ -580,16 +655,20 @@ class _DashboardTabState extends State<DashboardTab> {
         final snapshot = ble.sessionSnapshot;
         if (running &&
             snapshot != null &&
-            !identical(snapshot, _appliedSessionSnapshot)) {
+            snapshot != _appliedSessionSnapshot) {
           _appliedSessionSnapshot = snapshot;
           _sessionSeconds = snapshot.elapsed.inSeconds;
-          // Restart the local tick from every authoritative device snapshot.
-          // Session identity never suppresses an elapsed-time correction.
+          // Restart the local tick from authoritative device snapshot.
           _sessionTimer?.cancel();
         }
       }
       if (!ble.isConnected || !running || _isSessionPaused) {
         _livePostureAngle = null;
+        _hasDispatchedNotificationForEvent = false;
+        unawaited(LocalNotificationService.instance.cancelPostureAlert());
+        _hardwareSlouchAlert = false;
+        _activeSlouchStartTime = null;
+        _peakSlouchAngle = 0.0;
       }
     });
     if (_canMonitor && !_isSessionPaused) {
@@ -606,7 +685,9 @@ class _DashboardTabState extends State<DashboardTab> {
   @override
   void didUpdateWidget(DashboardTab oldWidget) {
     super.didUpdateWidget(oldWidget);
-    _applyDeviceState();
+    if (widget.isBluetoothConnected != oldWidget.isBluetoothConnected) {
+      _applyDeviceState();
+    }
 
     if (widget.triggerRecalibration && !oldWidget.triggerRecalibration) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -670,6 +751,7 @@ class _DashboardTabState extends State<DashboardTab> {
         .removeListener(_onNetworkStatusChanged);
     SyncService.instance.status.removeListener(_onSyncStatusChanged);
     _blePitchSub?.cancel();
+    _bleHardwarePostureSub?.cancel();
     _bleDeviceSessionSub?.cancel();
     PoiseBleService.instance.protocolChanges.removeListener(_applyDeviceState);
     _bleBatterySub?.cancel();
@@ -1936,6 +2018,80 @@ class _DashboardTabState extends State<DashboardTab> {
         ),
         const SizedBox(height: 6),
 
+        if (_isSlouchAlert) ...[
+          Container(
+            key: const ValueKey('slouch-alert-banner'),
+            width: double.infinity,
+            margin: const EdgeInsets.only(bottom: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFF1744),
+              borderRadius: BorderRadius.circular(10),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.15),
+                  blurRadius: 4,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: const [
+                Icon(Icons.warning_amber_rounded, color: Colors.white, size: 18),
+                SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    'Slouch detected. Return to your correct posture.',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ] else if (_isPostureRecentlyCorrected) ...[
+          Container(
+            key: const ValueKey('posture-corrected-banner'),
+            width: double.infinity,
+            margin: const EdgeInsets.only(bottom: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            decoration: BoxDecoration(
+              color: const Color(0xFF00C853),
+              borderRadius: BorderRadius.circular(10),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.15),
+                  blurRadius: 4,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: const [
+                Icon(Icons.check_circle_outline_rounded, color: Colors.white, size: 18),
+                SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    'Posture corrected! Good job.',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+
         // ── Speedometer Gauge & Live Spine Model (Full Width, Compact Gaps) ──
         Builder(builder: (context) {
           final isLiveActive = _canMonitor && !_isSessionPaused;
@@ -1975,15 +2131,7 @@ class _DashboardTabState extends State<DashboardTab> {
                           Text(
                             displayAngle,
                             style: TextStyle(
-                              color: !hasReading
-                                  ? Colors.white
-                                  : (_livePostureAngle!.abs() >
-                                          widget.activeMode.angle + 5.0
-                                      ? const Color(0xFFFF1744)
-                                      : (_livePostureAngle!.abs() >
-                                              widget.activeMode.angle
-                                          ? const Color(0xFFFFB300)
-                                          : const Color(0xFF00E676))),
+                              color: _postureTextColor,
                               fontSize: 28,
                               fontWeight: FontWeight.w900,
                               shadows: const [
@@ -2048,14 +2196,20 @@ class _DashboardTabState extends State<DashboardTab> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
-                'Mode',
-                style: TextStyle(
-                  color: Colors.black87,
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 0.5,
-                ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Mode',
+                    style: TextStyle(
+                      color: Colors.black87,
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                  Flexible(child: _buildHomeVibrationIndicator()),
+                ],
               ),
               const SizedBox(height: 8),
               IntrinsicHeight(
@@ -2266,7 +2420,8 @@ class _DashboardTabState extends State<DashboardTab> {
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      PoiseBleService.instance.isConnected
+                      PoiseBleService.instance.isConnected &&
+                              PoiseBleService.instance.isModeSynchronized
                           ? _formatDuration(_sessionSeconds)
                           : '--:--:--',
                       style: const TextStyle(
@@ -2366,7 +2521,12 @@ class _DashboardTabState extends State<DashboardTab> {
                       ),
                       const SizedBox(width: 3),
                       Text(
-                        _isSessionRunning ? 'End Session' : 'Start Session',
+                        _isSessionRunning
+                            ? 'End Session'
+                            : (_isBluetoothConnected &&
+                                    !PoiseBleService.instance.isModeSynchronized
+                                ? 'Connecting...'
+                                : 'Start Session'),
                         style: TextStyle(
                           color: PoiseBleService.instance.sessionControlsEnabled
                               ? Colors.white
@@ -2384,6 +2544,37 @@ class _DashboardTabState extends State<DashboardTab> {
         ),
         const SizedBox(height: 10),
       ],
+    );
+  }
+
+  Widget _buildHomeVibrationIndicator() {
+    final bool vibOn = PoiseBleService.instance.effectiveVibration;
+    return Container(
+      key: const ValueKey('home-vibration-indicator'),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: const Color(0xFFA5DCF2),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            vibOn ? Icons.vibration_rounded : Icons.notifications_off_outlined,
+            size: 12,
+            color: vibOn ? const Color(0xFF007A3D) : Colors.black45,
+          ),
+          const SizedBox(width: 3),
+          Text(
+            vibOn ? 'Vibration: ON' : 'Vibration: OFF',
+            style: TextStyle(
+              fontSize: 9.5,
+              fontWeight: FontWeight.bold,
+              color: vibOn ? const Color(0xFF007A3D) : Colors.black54,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

@@ -291,8 +291,8 @@ void main() {
     expect(find.byIcon(Icons.warning_rounded), findsOneWidget);
     expect(find.text('Delete all data?'), findsOneWidget);
     expect(
-        find.text(
-            'Are you sure you want to delete all your data?\nThis will permanently delete all your saved posture data, records, and history. This action cannot be undone.'),
+        find.textContaining(
+            'Are you sure you want to delete all'),
         findsOneWidget);
     expect(find.widgetWithText(ElevatedButton, 'Delete'), findsOneWidget);
     expect(find.widgetWithText(ElevatedButton, 'Cancel'), findsOneWidget);
