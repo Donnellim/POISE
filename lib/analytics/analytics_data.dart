@@ -35,6 +35,8 @@ class PostureRecord {
     this.userId,
     double? baselineAngle,
     this.feedbackTriggered,
+    this.endReason,
+    this.correctionStatus,
   })  : pitch = (pitch > 180.0 || pitch < -180.0)
             ? ((pitch / 100.0) > 60.0
                 ? 60.0
@@ -65,6 +67,8 @@ class PostureRecord {
   final String? userId;
   final double? baselineAngle;
   final bool? feedbackTriggered;
+  final String? endReason;
+  final String? correctionStatus;
 
   static double sanitizeAngle(double raw) {
     if (!raw.isFinite) return 0.0;
@@ -79,7 +83,7 @@ class PostureRecord {
 
   bool get slouched => pitch.abs() >= mode.angle;
   bool get valid =>
-      seconds > 0 &&
+      seconds >= 0 &&
       pitch.isFinite &&
       slouchEvents >= 0 &&
       warnings >= 0 &&
@@ -93,7 +97,7 @@ class AnalyticsSummary {
             .where((r) =>
                 r.valid &&
                 !r.at.isBefore(period.start(now)) &&
-                !r.at.isAfter(now))
+                !r.at.isAfter(now.add(const Duration(minutes: 5))))
             .toList()
           ..sort((a, b) => a.at.compareTo(b.at));
   final List<PostureRecord> records;

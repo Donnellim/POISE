@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_application_1/bluetooth/poise_ble_service.dart';
 import 'package:flutter_application_1/database/device_posture_event.dart';
 import 'package:flutter_application_1/database/local_database.dart';
+import 'package:flutter_application_1/database/models.dart';
 
 Map<String, dynamic> record() => {
       'schema_version': 1,
@@ -244,11 +245,10 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 100));
     });
     await tester.pumpAndSettle();
-    expect(find.text('Imported posture events (1)'), findsOneWidget);
-    await tester.tap(find.text('Imported posture events (1)'));
-    await tester.pumpAndSettle();
-    expect(find.textContaining('Unknown end'), findsOneWidget);
-    expect(find.text('Sync imported history'), findsNothing);
+    expect(find.text('Total Posture Events'), findsOneWidget);
+    expect(find.text('1'), findsWidgets);
+    expect(find.textContaining('Duration unknown'), findsOneWidget);
+    expect(find.text('Sync imported history to cloud'), findsNothing);
     await tester.pumpWidget(const SizedBox());
     await tester.runAsync(() => local.close());
   });
@@ -389,13 +389,104 @@ void main() {
     });
     await tester.pumpAndSettle();
 
-    expect(find.text('Imported posture events (1)'), findsOneWidget);
-    await tester.tap(find.text('Imported posture events (1)'));
+    expect(find.text('Total Posture Events'), findsOneWidget);
+    expect(find.text('1'), findsWidgets);
+    expect(find.text('7.0s'), findsWidgets);
+    expect(find.text('29.1°'), findsWidgets);
+    expect(find.text('0s'), findsWidgets);
+    expect(find.text('—'), findsWidgets);
+    expect(find.textContaining('29.1° (Normal)'), findsOneWidget);
+    expect(find.textContaining('Corrected in 7.006s (posture_corrected)'), findsOneWidget);
+    expect(find.textContaining('1 commanded vibration pulse'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.runAsync(() => local.close());
+  });
+
+  testWidgets('Analytics aggregates two finalized imported posture events without inflation from diagnostic records', (tester) async {
+    final payload1 = {
+      'schema_version': 1,
+      'event_id': 2132996330,
+      'device_id': 'POISE-A560D578',
+      'session_id': 2548296016,
+      'start_time_ms': 1792754469621,
+      'end_time_ms': 1792754476627,
+      'timestamp_status': 'synced',
+      'mode_id': 1,
+      'peak_deviation_deg': 29.1,
+      'vibration_count': 1,
+      'correction_status': 'corrected',
+      'end_reason': 'posture_corrected',
+      'is_final': true
+    };
+    final payload2 = {
+      'schema_version': 1,
+      'event_id': 2132996331,
+      'device_id': 'POISE-A560D578',
+      'session_id': 2548296016,
+      'start_time_ms': 1792754480000,
+      'end_time_ms': 1792754485800,
+      'timestamp_status': 'synced',
+      'mode_id': 1,
+      'peak_deviation_deg': 24.5,
+      'vibration_count': 1,
+      'correction_status': 'corrected',
+      'end_reason': 'posture_corrected',
+      'is_final': true
+    };
+
+    final local = PoiseLocalDatabase.instance;
+    await tester.runAsync(() async {
+      await local.init(customPath: ':memory:');
+      final now = DateTime.now();
+      // Insert a live session with diagnostic posture events
+      await local.insertSession(SessionModel(
+        id: 'sess_diag_1',
+        deviceId: 'POISE-A560D578',
+        userId: 'local_user',
+        modeId: 1,
+        startedAt: now.subtract(const Duration(minutes: 10)),
+        endedAt: now,
+        updatedAt: now,
+        baselineAngle: 0.0,
+      ));
+      await local.insertPostureEvent(PostureEventModel(
+        id: 'diag_evt_1',
+        sessionId: 'sess_diag_1',
+        occurredAt: now.subtract(const Duration(minutes: 5)),
+        tiltAngle: 20.0,
+        durationSec: 2.2,
+        feedbackTriggered: true,
+        correctedAt: now.subtract(const Duration(minutes: 5)).add(const Duration(milliseconds: 2200)),
+        correctionTimeSec: 2.2,
+      ));
+      await local.insertPostureEvent(PostureEventModel(
+        id: 'diag_evt_2',
+        sessionId: 'sess_diag_1',
+        occurredAt: now.subtract(const Duration(minutes: 3)),
+        tiltAngle: 22.0,
+        durationSec: 2.2,
+        feedbackTriggered: true,
+        correctedAt: now.subtract(const Duration(minutes: 3)).add(const Duration(milliseconds: 2200)),
+        correctionTimeSec: 2.2,
+      ));
+
+      await local.commitDeviceEvent(DevicePostureEvent.parse(payload1));
+      await local.commitDeviceEvent(DevicePostureEvent.parse(payload2));
+    });
+
+    await tester.runAsync(() async {
+      await tester.pumpWidget(const MaterialApp(home: Scaffold(body: AnalyticsTab())));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    });
     await tester.pumpAndSettle();
 
-    expect(find.textContaining('Mode 1 - 29.1 degrees - corrected'), findsOneWidget);
-    expect(find.textContaining('posture_corrected'), findsOneWidget);
-    expect(find.textContaining('1 commanded vibration pulses'), findsOneWidget);
+    expect(find.text('Total Posture Events'), findsOneWidget);
+    expect(find.text('2'), findsWidgets);
+    expect(find.text('6.4s'), findsWidgets);
+    expect(find.text('29.1°'), findsWidgets);
+    expect(find.textContaining('Corrected in 7.006s (posture_corrected)'), findsOneWidget);
+    expect(find.textContaining('Corrected in 5.8s (posture_corrected)'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox());
     await tester.runAsync(() => local.close());
