@@ -147,11 +147,17 @@ class _DashboardTabState extends State<DashboardTab> {
   Future<void> _ensureActiveSessionStarted({double? baselineAngle}) async {
     if (!_canMonitor) return;
     if (_currentSessionId != null) return;
+    final sessionRevision = PoiseBleService.instance.sessionEndRevision;
     try {
       final user = SocialAuth.instance.user;
       final userId = user?.id ?? 'local_user';
-      final modeId = ModeModel.idForActivityMode(widget.activeMode);
+      final modeId = ModeModel.idForActivityMode(
+          PoiseBleService.instance.hardwareActiveMode);
       final prefs = await SharedPreferences.getInstance();
+      if (sessionRevision != PoiseBleService.instance.sessionEndRevision ||
+          _currentSessionId != null) {
+        return;
+      }
       final deviceId = prefs.getString('poise.deviceId') ?? 'POISE-DEVICE';
       final now = DateTime.now();
 
@@ -159,7 +165,10 @@ class _DashboardTabState extends State<DashboardTab> {
       if (base.abs() > 180.0) base /= 100.0;
       base = base.clamp(-60.0, 60.0);
       _sessionBaselineAngle = base;
-      _currentSessionId = 'sess_${now.millisecondsSinceEpoch}';
+      final snapshot = PoiseBleService.instance.sessionSnapshot;
+      _currentSessionId = snapshot == null
+          ? 'sess_${now.millisecondsSinceEpoch}'
+          : ensureUuid('$deviceId:${snapshot.id}');
       final startedAt = now.subtract(Duration(seconds: _sessionSeconds));
       await PoiseLocalDatabase.instance.insertSession(
         SessionModel(
@@ -337,7 +346,8 @@ class _DashboardTabState extends State<DashboardTab> {
     try {
       final user = SocialAuth.instance.user;
       final userId = user?.id ?? 'local_user';
-      final modeId = ModeModel.idForActivityMode(widget.activeMode);
+      final modeId = ModeModel.idForActivityMode(
+          PoiseBleService.instance.hardwareActiveMode);
       final prefs = await SharedPreferences.getInstance();
       final deviceId = prefs.getString('poise.deviceId') ?? 'POISE-DEVICE';
       final now = DateTime.now();
@@ -547,9 +557,17 @@ class _DashboardTabState extends State<DashboardTab> {
     });
   }
 
+  int _observedSessionEnd = 0;
+
   void _applyDeviceState() {
     if (!mounted) return;
     final ble = PoiseBleService.instance;
+    if (_observedSessionEnd != ble.sessionEndRevision) {
+      _observedSessionEnd = ble.sessionEndRevision;
+      _closeCurrentSession();
+      _appliedSessionSnapshot = null;
+      _sessionSeconds = 0;
+    }
     final running = ble.deviceState == PoiseDeviceState.monitoring ||
         ble.deviceState == PoiseDeviceState.paused;
     setState(() {
@@ -2164,6 +2182,48 @@ class _DashboardTabState extends State<DashboardTab> {
         ),
         const SizedBox(height: 10),
 
+        if (PoiseBleService.instance.isConnected &&
+            !PoiseBleService.instance.clockSynchronized)
+          TextButton(
+              onPressed: PoiseBleService.instance.commandPending
+                  ? null
+                  : () => PoiseBleService.instance.synchronizeClock(),
+              child: Text(
+                  'Sync device clock (${PoiseBleService.instance.clockStatus})')),
+        if (PoiseBleService.instance.isConnected &&
+            PoiseBleService.instance.pendingEventCount > 0)
+          TextButton(
+              onPressed: PoiseBleService.instance.importing
+                  ? null
+                  : () async {
+                      final generation =
+                          PoiseBleService.instance.connectionGeneration;
+                      final approved = await showDialog<bool>(
+                          context: context,
+                          builder: (context) => AlertDialog(
+                                  title: const Text(
+                                      'Import stored posture history?'),
+                                  content: Text(
+                                      'Copy ${PoiseBleService.instance.pendingEventCount} stored posture events to this phone?'),
+                                  actions: [
+                                    TextButton(
+                                        onPressed: () =>
+                                            Navigator.pop(context, false),
+                                        child: const Text('Later')),
+                                    TextButton(
+                                        onPressed: () =>
+                                            Navigator.pop(context, true),
+                                        child: const Text('Import'))
+                                  ]));
+                      if (approved == true &&
+                          generation ==
+                              PoiseBleService.instance.connectionGeneration) {
+                        await PoiseBleService.instance.importStoredEvents();
+                      }
+                    },
+              child: const Text('Import stored events')),
+        if (PoiseBleService.instance.importError != null)
+          Text(PoiseBleService.instance.importError!),
         if (PoiseBleService.instance.protocolError != null)
           Text(PoiseBleService.instance.protocolError!,
               style: const TextStyle(color: Colors.red)),
@@ -2309,8 +2369,8 @@ class _DashboardTabState extends State<DashboardTab> {
                         _isSessionRunning ? 'End Session' : 'Start Session',
                         style: TextStyle(
                           color: PoiseBleService.instance.sessionControlsEnabled
-                            ? Colors.white
-                            : Colors.black54,
+                              ? Colors.white
+                              : Colors.black54,
                           fontSize: 10.5,
                           fontWeight: FontWeight.bold,
                         ),

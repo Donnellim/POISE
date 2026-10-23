@@ -16,6 +16,9 @@ void main() {
   void snapshot({String state = 'IDLE', int mode = 4, int vib = 0}) {
     ble.receiveMessage('STATE:$state');
     ble.receiveMessage('CONFIG:MODE:$mode,VIB:$vib');
+    if (state == 'MONITORING' || state == 'PAUSED') {
+      ble.receiveMessage('SESSION:SYNC:test-session,ELAPSED_MS:0');
+    }
   }
 
   setUp(() {
@@ -24,8 +27,20 @@ void main() {
     ble.simulateForTesting = true;
     commands.clear();
     ble.commandWriter = (command) async {
+      if (command.startsWith('TIME:SYNC:')) {
+        ble.receiveMessage('TIME:SYNC:OK');
+        return;
+      }
+      if (command == 'EVENTLOG:STATUS') {
+        ble.receiveMessage('EVENTLOG:PENDING:0');
+        return;
+      }
       commands.add(command);
-      if (command == 'STATE:SYNC') snapshot();
+      if (command == 'STATE:SYNC') {
+        snapshot(
+            mode: commands.contains('MODE:3') ? 3 : 4,
+            state: ble.deviceState.name.toUpperCase());
+      }
       if (command == 'CALIBRATION:READY') {
         ble.receiveMessage('STATE:CALIBRATION_READY');
       }
@@ -52,7 +67,8 @@ void main() {
     expect(find.text('Session'), findsOneWidget);
     expect(find.textContaining('Saved:'), findsNothing);
     final summary = find.byKey(const ValueKey('active-mode-summary'));
-    expect(find.descendant(of: summary, matching: find.byType(Icon)), findsNothing);
+    expect(find.descendant(of: summary, matching: find.byType(Icon)),
+        findsNothing);
     expect(find.text('--:--:--'), findsOneWidget);
     expect(find.text('---'), findsNWidgets(2));
     expect(find.text(ActivityMode.normal.label), findsNothing);
@@ -61,7 +77,8 @@ void main() {
     expect(tester.widget<GestureDetector>(toggle).onTap, isNull);
     final background = tester.widget<Container>(
         find.descendant(of: toggle, matching: find.byType(Container)).first);
-    expect((background.decoration as BoxDecoration).color, const Color(0xFFDCE5E9));
+    expect((background.decoration as BoxDecoration).color,
+        const Color(0xFFA5DCF2));
     await tester.tap(toggle);
     await tester.pump();
     expect(commands, isEmpty);
@@ -74,7 +91,8 @@ void main() {
     expect(find.text('Pause'), findsNothing);
     expect(find.text('End Session'), findsNothing);
     expect(tester.widget<GestureDetector>(toggle).onTap, isNotNull);
-    expect(find.descendant(of: summary, matching: find.byType(Icon)), findsOneWidget);
+    expect(find.descendant(of: summary, matching: find.byType(Icon)),
+        findsOneWidget);
     expect(commands, ['STATE:SYNC']);
     await tester.pumpWidget(const SizedBox());
   });
@@ -104,6 +122,14 @@ void main() {
       () async {
     final sent = Completer<void>();
     ble.commandWriter = (command) async {
+      if (command.startsWith('TIME:SYNC:')) {
+        ble.receiveMessage('TIME:SYNC:OK');
+        return;
+      }
+      if (command == 'EVENTLOG:STATUS') {
+        ble.receiveMessage('EVENTLOG:PENDING:0');
+        return;
+      }
       commands.add(command);
       sent.complete();
     };
@@ -115,6 +141,8 @@ void main() {
     expect(ble.currentPitchAngle, 12.5);
     expect(ble.controlsEnabled, isFalse);
     ble.receiveMessage('CONFIG:MODE:2,VIB:1');
+    expect(ble.controlsEnabled, isFalse);
+    ble.receiveMessage('SESSION:SYNC:paused-session,ELAPSED_MS:0');
     await connection;
     expect(ble.controlsEnabled, isTrue);
     expect(ble.deviceState, PoiseDeviceState.paused);
@@ -140,7 +168,7 @@ void main() {
     ble.receiveMessage('SESSION:SYNC:42,ELAPSED_MS:0');
     expect(ble.deviceSessionSeconds, 0);
     ble.receiveMessage('SESSION:STARTED');
-    expect(ble.sessionSnapshot!.id, '42');
+    expect(ble.sessionSnapshot, isNull);
   });
 
   for (final sessionFirst in [true, false]) {
@@ -157,12 +185,21 @@ void main() {
       var elapsed = 12000;
       var state = 'MONITORING';
       ble.commandWriter = (command) async {
+        if (command.startsWith('TIME:SYNC:')) {
+          ble.receiveMessage('TIME:SYNC:OK');
+          return;
+        }
+        if (command == 'EVENTLOG:STATUS') {
+          ble.receiveMessage('EVENTLOG:PENDING:0');
+          return;
+        }
         commands.add(command);
         if (command != 'STATE:SYNC') return;
         void session() =>
             ble.receiveMessage('SESSION:SYNC:42,ELAPSED_MS:$elapsed');
         if (sessionFirst) session();
-        snapshot(state: state);
+        ble.receiveMessage('STATE:$state');
+        ble.receiveMessage('CONFIG:MODE:4,VIB:0');
         if (!sessionFirst) session();
       };
       // Snapshot arriving before the dashboard mounts must also be restored.
@@ -197,7 +234,8 @@ void main() {
       await tester.pump(const Duration(seconds: 5));
       expect(find.text('00:00:47'), findsOneWidget);
       expect(find.text('Set Your Neutral Posture'), findsNothing);
-      expect(commands, ['STATE:SYNC', 'STATE:SYNC', 'STATE:SYNC']);
+      expect(
+          commands, ['STATE:SYNC', 'STATE:SYNC', 'STATE:SYNC', 'STATE:SYNC']);
       ble.receiveMessage('STATE:MONITORING');
       await tester.pump(const Duration(seconds: 2));
       expect(find.text('00:00:49'), findsOneWidget);
@@ -213,6 +251,7 @@ void main() {
     expect(ble.controlsEnabled, isFalse);
     ble.receiveMessage('MODE:APPLIED:3');
     expect(await mode, isTrue);
+    await Future<void>.delayed(Duration.zero);
     final vibration = ble.sendVibrationCommand(true);
     expect(ble.vibrationEnabled, isFalse);
     ble.receiveMessage('VIB:APPLIED:1');
@@ -220,6 +259,14 @@ void main() {
     expect(ble.vibrationEnabled, isTrue);
     await ble.disconnect();
     ble.commandWriter = (command) async {
+      if (command.startsWith('TIME:SYNC:')) {
+        ble.receiveMessage('TIME:SYNC:OK');
+        return;
+      }
+      if (command == 'EVENTLOG:STATUS') {
+        ble.receiveMessage('EVENTLOG:PENDING:0');
+        return;
+      }
       commands.add(command);
       snapshot(mode: 3, vib: 1);
     };
@@ -294,7 +341,15 @@ void main() {
     'ERROR'
   ]) {
     test('restore $state on reconnect', () async {
-      ble.commandWriter = (_) async {
+      ble.commandWriter = (command) async {
+        if (command.startsWith('TIME:SYNC:')) {
+          ble.receiveMessage('TIME:SYNC:OK');
+          return;
+        }
+        if (command == 'EVENTLOG:STATUS') {
+          ble.receiveMessage('EVENTLOG:PENDING:0');
+          return;
+        }
         snapshot(state: state);
       };
       await ble.connect(device);
@@ -380,6 +435,14 @@ void main() {
       addTearDown(tester.view.resetDevicePixelRatio);
       await ble.connect(device);
       ble.commandWriter = (command) async {
+        if (command.startsWith('TIME:SYNC:')) {
+          ble.receiveMessage('TIME:SYNC:OK');
+          return;
+        }
+        if (command == 'EVENTLOG:STATUS') {
+          ble.receiveMessage('EVENTLOG:PENDING:0');
+          return;
+        }
         commands.add(command);
         if (command == 'CALIBRATION:CANCEL') ble.receiveMessage('STATE:IDLE');
       };
@@ -438,7 +501,8 @@ void main() {
     expect(switches.first.onChanged, isNull);
     await tester.tap(find.byType(Switch).first);
     expect(changes, 0);
-    expect(find.text('Select the mode based on what you are currently doing.'), findsOneWidget);
+    expect(find.text('Select the mode based on what you are currently doing.'),
+        findsOneWidget);
     expect(find.text('Saved on phone'), findsNothing);
   });
   testWidgets(
@@ -468,6 +532,14 @@ void main() {
     await tester.pump();
     expect(find.textContaining('Calibrating'), findsWidgets);
     expect(find.text('End Session'), findsNothing);
+    final previousWriter = ble.commandWriter!;
+    ble.commandWriter = (command) async {
+      if (command == 'STATE:SYNC') {
+        snapshot(state: 'MONITORING');
+      } else {
+        await previousWriter(command);
+      }
+    };
     ble.receiveMessage('SESSION:STARTED');
     await tester.pump();
     expect(find.text('End Session'), findsOneWidget);
@@ -480,7 +552,15 @@ void main() {
                 find.byKey(const ValueKey('session-toggle')))
             .onTap,
         isNull);
-    ble.commandWriter = (_) async {
+    ble.commandWriter = (command) async {
+      if (command.startsWith('TIME:SYNC:')) {
+        ble.receiveMessage('TIME:SYNC:OK');
+        return;
+      }
+      if (command == 'EVENTLOG:STATUS') {
+        ble.receiveMessage('EVENTLOG:PENDING:0');
+        return;
+      }
       snapshot(state: 'PAUSED');
     };
     await tester.runAsync(() => ble.connect(device));

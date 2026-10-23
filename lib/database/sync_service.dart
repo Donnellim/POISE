@@ -1,3 +1,5 @@
+import 'device_posture_event.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -13,7 +15,8 @@ class SyncService {
   SyncService._();
   static final SyncService instance = SyncService._();
 
-  final ValueNotifier<SyncStatus> status = ValueNotifier<SyncStatus>(SyncStatus.idle);
+  final ValueNotifier<SyncStatus> status =
+      ValueNotifier<SyncStatus>(SyncStatus.idle);
   final ValueNotifier<String?> lastError = ValueNotifier<String?>(null);
   final ValueNotifier<DateTime?> lastSyncTime = ValueNotifier<DateTime?>(null);
 
@@ -39,6 +42,65 @@ class SyncService {
       }
     } catch (_) {}
     return null;
+  }
+
+  Future<void> approveDeviceHistory(String userId) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('poise.deviceHistoryConsent.$userId', true);
+    await PoiseLocalDatabase.instance.linkDeviceHistory(userId);
+  }
+
+  Future<void> _syncDeviceHistory(SupabaseClient client, String userId) async {
+    final db = await PoiseLocalDatabase.instance.database;
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool('poise.deviceHistoryConsent.$userId') == true) {
+      await PoiseLocalDatabase.instance.linkDeviceHistory(userId);
+    }
+    final rows = await db.query('device_posture_events',
+        where: 'owner_id = ? AND synced = 0', whereArgs: [userId]);
+    for (final row in rows) {
+      if (client.auth.currentUser?.id != userId) {
+        throw StateError('Account changed during sync');
+      }
+      await client.from('device_posture_events').upsert({
+        for (final key in DevicePostureEvent.fields) key: row[key],
+        'user_id': userId,
+      }, onConflict: 'user_id,device_id,event_id', ignoreDuplicates: true);
+      // Never mark a conflicting cloud row as synced.
+      final remote = await client
+          .from('device_posture_events')
+          .select()
+          .eq('user_id', userId)
+          .eq('device_id', row['device_id']!)
+          .eq('event_id', row['event_id']!)
+          .single();
+      if (DevicePostureEvent.fields.any((key) => row[key] != remote[key])) {
+        throw StateError('Conflicting cloud posture event');
+      }
+      await db.update('device_posture_events', {'synced': 1},
+          where: 'owner_id = ? AND device_id = ? AND event_id = ?',
+          whereArgs: [userId, row['device_id'], row['event_id']]);
+    }
+    // Paginate so a new phone restores more than Supabase's default row limit.
+    for (var offset = 0;; offset += 500) {
+      if (client.auth.currentUser?.id != userId) {
+        throw StateError('Account changed during restore');
+      }
+      final remote = await client
+          .from('device_posture_events')
+          .select()
+          .eq('user_id', userId)
+          .order('device_id')
+          .order('event_id')
+          .range(offset, offset + 499);
+      for (final row in remote) {
+        await PoiseLocalDatabase.instance.commitDeviceEvent(
+            DevicePostureEvent.parse({...row, 'is_final': true}),
+            ownerId: userId,
+            synced: true);
+      }
+      if (remote.length < 500) break;
+    }
   }
 
   /// Pushes un-synced sessions and posture events from local SQFlite to Supabase.
@@ -72,10 +134,13 @@ class SyncService {
       final localDb = PoiseLocalDatabase.instance;
       final userId = client.auth.currentUser?.id;
       if (userId == null) {
-        lastError.value = 'User authentication session is missing. Please sign in again.';
+        lastError.value =
+            'User authentication session is missing. Please sign in again.';
         status.value = SyncStatus.error;
         return false;
       }
+
+      await _syncDeviceHistory(client, userId);
 
       // 0. Ensure user profile exists in Supabase Cloud
       final currentUser = client.auth.currentUser;
@@ -220,7 +285,9 @@ class SyncService {
       status.value = SyncStatus.success;
       return true;
     } on PostgrestException catch (e) {
-      if (e.code == '23503' && (e.message.contains('modes') || e.details?.toString().contains('modes') == true)) {
+      if (e.code == '23503' &&
+          (e.message.contains('modes') ||
+              e.details?.toString().contains('modes') == true)) {
         lastError.value =
             'The "modes" table is empty in Supabase. Please run the SQL seed in your Supabase SQL editor.';
       } else if (e.code == '42P01') {
@@ -271,6 +338,13 @@ class SyncService {
     if (!NetworkService.instance.isConnected) return false;
 
     final localDb = PoiseLocalDatabase.instance;
+    try {
+      await _syncDeviceHistory(client, userId);
+    } catch (error) {
+      lastError.value = error.toString();
+      status.value = SyncStatus.error;
+      return false;
+    }
     final isEmpty = await localDb.isDatabaseEmpty();
     if (!isEmpty && !force) {
       // Local database already has records, no initial hydration needed.
@@ -282,10 +356,8 @@ class SyncService {
 
     try {
       // 1. Fetch user's devices
-      final devicesResponse = await client
-          .from('devices')
-          .select()
-          .eq('user_id', userId);
+      final devicesResponse =
+          await client.from('devices').select().eq('user_id', userId);
       for (final raw in (devicesResponse as List)) {
         final device = DeviceModel.fromMap(raw as Map<String, dynamic>);
         await localDb.upsertDevice(device);
@@ -355,6 +427,7 @@ class SyncService {
     if (client == null || userId == null) return false;
 
     try {
+      await client.from('device_posture_events').delete().eq('user_id', userId);
       // 1. Try calling the PostgreSQL RPC function delete_user_posture_data()
       try {
         await client.rpc('delete_user_posture_data');
@@ -364,20 +437,19 @@ class SyncService {
       }
 
       // Fetch user's session IDs to delete associated posture events
-      final sessionsResponse = await client
-          .from('sessions')
-          .select('id')
-          .eq('user_id', userId);
-      final sessionIds = (sessionsResponse as List)
-          .map((s) => s['id'] as String)
-          .toList();
+      final sessionsResponse =
+          await client.from('sessions').select('id').eq('user_id', userId);
+      final sessionIds =
+          (sessionsResponse as List).map((s) => s['id'] as String).toList();
 
       if (sessionIds.isNotEmpty) {
         const chunkSize = 50;
         for (int i = 0; i < sessionIds.length; i += chunkSize) {
           final chunk = sessionIds.sublist(
             i,
-            i + chunkSize > sessionIds.length ? sessionIds.length : i + chunkSize,
+            i + chunkSize > sessionIds.length
+                ? sessionIds.length
+                : i + chunkSize,
           );
           await client
               .from('posture_events')
@@ -415,7 +487,8 @@ class SyncService {
         await client.rpc('delete_user_account');
       } on PostgrestException catch (e) {
         debugPrint('[SyncService] delete_user_account RPC error: ${e.message}');
-        if (e.code == 'PGRST202' || e.message.contains('not find the function')) {
+        if (e.code == 'PGRST202' ||
+            e.message.contains('not find the function')) {
           throw Exception(
             'The delete_user_account() SQL function is missing in your Supabase project. '
             'Please run the delete_user_account function in your Supabase SQL Editor.',
@@ -433,7 +506,8 @@ class SyncService {
     } catch (e) {
       debugPrint('[SyncService] deleteUserAccount error: $e');
       lastError.value = e.toString();
-      throw Exception('Failed to delete user account: ${e.toString().replaceAll('Exception: ', '')}');
+      throw Exception(
+          'Failed to delete user account: ${e.toString().replaceAll('Exception: ', '')}');
     }
   }
 }

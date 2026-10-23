@@ -1,3 +1,4 @@
+import 'database/sync_service.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -46,6 +47,9 @@ class _DashboardPageState extends State<DashboardPage> {
   StreamSubscription<ActivityMode>? _modeSubscription;
   StreamSubscription<bool>? _modeSyncSubscription;
   int _currentIndex = 0;
+  int? _promptedConnection;
+  bool _historyDialogOpen = false;
+  bool _cloudHistoryChecked = false;
   final _notifications = NotificationCenter.preview();
 
   // A running web session can retain state from before modes were shared.
@@ -89,7 +93,8 @@ class _DashboardPageState extends State<DashboardPage> {
       }
     });
 
-    _isBluetoothConnected = widget.initialBluetoothConnected && PoiseBleService.instance.isConnected;
+    _isBluetoothConnected = widget.initialBluetoothConnected &&
+        PoiseBleService.instance.isConnected;
     _notificationPermissionGranted =
         widget.initialNotificationPermissionGranted;
     _vibrationEnabled = PoiseBleService.instance.isModeSynchronized
@@ -99,6 +104,80 @@ class _DashboardPageState extends State<DashboardPage> {
         FeedbackPreferences.phoneNotification;
 
     _notifications.onNoticeAdded = _dispatchLocalNotification;
+    WidgetsBinding.instance.addPostFrameCallback((_) => _offerHistory());
+  }
+
+  Future<void> _offerHistory() async {
+    if (!mounted || _historyDialogOpen) return;
+    final ble = PoiseBleService.instance;
+    if (ble.isConnected &&
+        ble.pendingEventCount > 0 &&
+        _promptedConnection != ble.connectionGeneration &&
+        !ble.importAuthorized) {
+      final generation = ble.connectionGeneration;
+      _promptedConnection = generation;
+      _historyDialogOpen = true;
+      final approved = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+                  title: const Text('Import stored posture history?'),
+                  content: Text(
+                      'P.O.I.S.E. has ${ble.pendingEventCount} saved posture events. Importing copies them into local history on this phone. You can import now or later.'),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.pop(context, false),
+                        child: const Text('Later')),
+                    TextButton(
+                        onPressed: () => Navigator.pop(context, true),
+                        child: const Text('Import'))
+                  ]));
+      _historyDialogOpen = false;
+      if (approved == true &&
+          ble.connectionGeneration == generation &&
+          ble.isConnected) {
+        await ble.importStoredEvents();
+        if (mounted && ble.importError != null) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text(ble.importError!)));
+        }
+      }
+    }
+    final user = SocialAuth.instance.user;
+    if (!mounted || _cloudHistoryChecked || user == null) return;
+    _cloudHistoryChecked = true;
+    try {
+      final rows = await PoiseLocalDatabase.instance.getDeviceEvents();
+      if (!mounted || !rows.any((row) => row['owner_id'] == null)) {
+        _cloudHistoryChecked = false;
+        return;
+      }
+      _historyDialogOpen = true;
+      final approved = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+                  title: const Text('Sync local posture history?'),
+                  content: const Text(
+                      'Link imported history on this phone to your account and upload it to Supabase? Local copies stay available if upload fails.'),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.pop(context, false),
+                        child: const Text('Later')),
+                    TextButton(
+                        onPressed: () => Navigator.pop(context, true),
+                        child: const Text('Sync history'))
+                  ]));
+      if (approved == true && SocialAuth.instance.user?.id == user.id) {
+        await SyncService.instance.approveDeviceHistory(user.id);
+        await SyncService.instance.syncToCloud();
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Local history: $error')));
+      }
+    } finally {
+      _historyDialogOpen = false;
+    }
   }
 
   void _dispatchLocalNotification(PoiseNoticeType type) {
@@ -172,6 +251,7 @@ class _DashboardPageState extends State<DashboardPage> {
 
   void _protocolChanged() {
     if (!mounted) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) => _offerHistory());
     setState(() {
       _activeMode = PoiseBleService.instance.phoneSavedMode;
       _vibrationEnabled = PoiseBleService.instance.vibrationEnabled;
@@ -338,7 +418,7 @@ class _DashboardPageState extends State<DashboardPage> {
                         ),
                       ),
                     ),
-                    if (widget.requiresAccount)
+                    if (widget.requiresAccount && _currentIndex != 1)
                       const Positioned.fill(child: GuestAccountPrompt()),
                   ],
                 ),

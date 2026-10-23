@@ -1,3 +1,5 @@
+import '../auth/social_auth.dart';
+import '../database/sync_service.dart';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
@@ -29,6 +31,7 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
   bool _preview = false;
   bool _exporting = false;
   List<PostureRecord> _localRecords = [];
+  List<Map<String, dynamic>> _deviceEvents = [];
   List<SessionModel> _localSessions = [];
   bool _isLoadingDb = false;
   bool _hasPendingReload = false;
@@ -74,16 +77,19 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
     }
     _isLoadingDb = true;
     try {
+      final imported = await PoiseLocalDatabase.instance.getDeviceEvents();
       final records = await PoiseLocalDatabase.instance.getAllPostureRecords();
       final sessions =
           await PoiseLocalDatabase.instance.getAllSessions(limit: 20);
       if (mounted) {
         setState(() {
+          _deviceEvents = imported;
           _localRecords = records;
           _localSessions = sessions;
         });
       }
-    } catch (_) {} finally {
+    } catch (_) {
+    } finally {
       _isLoadingDb = false;
       if (_hasPendingReload) {
         _hasPendingReload = false;
@@ -118,26 +124,43 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
     return _localSessions;
   }
 
-  void _selectPeriod(AnalyticsPeriod period) {
-    if (period == AnalyticsPeriod.month || period == AnalyticsPeriod.year) {
-      showDialog<void>(
-          context: context,
-          builder: (context) => AlertDialog(
-                backgroundColor: _panel,
-                title: const Text('Long-term history',
-                    style: TextStyle(color: _ink)),
+  void _selectPeriod(AnalyticsPeriod period) =>
+      setState(() => _period = period);
+
+  Future<void> _syncImportedHistory() async {
+    final user = SocialAuth.instance.user;
+    if (user == null) return;
+    final approved = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+                title: const Text('Sync local posture history?'),
                 content: const Text(
-                    '30 Days and This Year require a free account and connected cloud history. Cloud history is not connected in this build. You can view available records using Today or 7 Days.',
-                    style: TextStyle(color: _ink)),
+                    'Link imported history on this phone to your account and sync it with Supabase?'),
                 actions: [
                   TextButton(
-                      onPressed: () => Navigator.pop(context),
-                      child: const Text('Got it'))
-                ],
-              ));
-      return;
+                      onPressed: () => Navigator.pop(context, false),
+                      child: const Text('Later')),
+                  TextButton(
+                      onPressed: () => Navigator.pop(context, true),
+                      child: const Text('Sync history'))
+                ]));
+    if (approved != true || SocialAuth.instance.user?.id != user.id) return;
+    try {
+      await SyncService.instance.approveDeviceHistory(user.id);
+      final success = await SyncService.instance.syncToCloud();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(success
+                ? 'History synced.'
+                : SyncService.instance.lastError.value ??
+                    'Sync failed. Local history is retained.')));
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Sync failed: $error')));
+      }
     }
-    setState(() => _period = period);
   }
 
   Future<void> _export(AnalyticsSummary summary) async {
@@ -254,9 +277,8 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
   @override
   Widget build(BuildContext context) {
     final now = widget.now?.call() ?? DateTime.now();
-    final effectiveNow = _preview
-        ? DateTime(now.year, now.month, now.day, 23, 59, 59)
-        : now;
+    final effectiveNow =
+        _preview ? DateTime(now.year, now.month, now.day, 23, 59, 59) : now;
     final activeRecords =
         widget.records.isNotEmpty ? widget.records : _localRecords;
     final summary = AnalyticsSummary(
@@ -269,282 +291,302 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
           key: const PageStorageKey('analytics-scroll'),
           physics: const BouncingScrollPhysics(),
           padding: const EdgeInsets.fromLTRB(14, 8, 14, 16),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const PoiseHeader(),
-          const SizedBox(height: 12),
-          const Text('Analysis',
-              style: TextStyle(
-                color: Color(0xFF0F1E29),
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-              )),
-          const SizedBox(height: 12),
-          Container(
-            padding: const EdgeInsets.all(5),
-            decoration: BoxDecoration(
-                color: _panel, borderRadius: BorderRadius.circular(5)),
-            child: Row(children: [
-              for (final period in AnalyticsPeriod.values)
-                Expanded(
-                    child: Semantics(
-                  selected: period == _period,
-                  button: true,
-                  child: InkWell(
-                      onTap: () => _selectPeriod(period),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            vertical: 10, horizontal: 2),
-                        decoration: BoxDecoration(
-                            color: period == _period
-                                ? const Color(0xFF00BED6)
-                                : Colors.transparent,
-                            borderRadius: BorderRadius.circular(4)),
-                        child: FittedBox(
-                            fit: BoxFit.scaleDown,
-                            child: Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Text(period.label,
-                                      style: const TextStyle(fontSize: 10)),
-                                  if (period == AnalyticsPeriod.month ||
-                                      period == AnalyticsPeriod.year) ...[
-                                    const SizedBox(width: 2),
-                                    const Icon(Icons.lock,
-                                        size: 12, color: _ink)
-                                  ],
-                                ])),
-                      )),
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const PoiseHeader(),
+            const SizedBox(height: 12),
+            if (_deviceEvents.isNotEmpty && SocialAuth.instance.user != null)
+              TextButton(
+                  onPressed: _syncImportedHistory,
+                  child: const Text('Sync imported history')),
+            if (_deviceEvents.isNotEmpty)
+              ExpansionTile(
+                title:
+                    Text('Imported posture events (${_deviceEvents.length})'),
+                subtitle: const Text(
+                    'Stored locally - Event history, not complete session history'),
+                children: [
+                  for (final event in _deviceEvents)
+                    ListTile(
+                      title: Text(
+                          'Mode ${event['mode_id']} - ${event['peak_deviation_deg']} degrees - ${event['correction_status']}'),
+                      subtitle: Text(
+                          '${event['start_time_ms'] == null ? 'Unknown start' : DateTime.fromMillisecondsSinceEpoch(event['start_time_ms'] as int, isUtc: true).toLocal()}\n'
+                          '${event['end_time_ms'] == null ? 'Unknown end' : DateTime.fromMillisecondsSinceEpoch(event['end_time_ms'] as int, isUtc: true).toLocal()} - ${event['end_reason']}\n'
+                          '${event['vibration_count']} commanded vibration pulses\n'
+                          '${event['start_time_ms'] != null && event['end_time_ms'] != null ? '${((event['end_time_ms'] as int) - (event['start_time_ms'] as int)) / 1000} seconds' : 'Duration unknown'}'),
+                    )
+                ],
+              ),
+            const Text('Analysis',
+                style: TextStyle(
+                  color: Color(0xFF0F1E29),
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
                 )),
-            ]),
-          ),
-          const SizedBox(height: 9),
-          if (_showInfo) ...[
+            const SizedBox(height: 12),
             Container(
-                padding: const EdgeInsets.only(left: 9),
+              padding: const EdgeInsets.all(5),
+              decoration: BoxDecoration(
+                  color: _panel, borderRadius: BorderRadius.circular(5)),
+              child: Row(children: [
+                for (final period in AnalyticsPeriod.values)
+                  Expanded(
+                      child: Semantics(
+                    selected: period == _period,
+                    button: true,
+                    child: InkWell(
+                        onTap: () => _selectPeriod(period),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              vertical: 10, horizontal: 2),
+                          decoration: BoxDecoration(
+                              color: period == _period
+                                  ? const Color(0xFF00BED6)
+                                  : Colors.transparent,
+                              borderRadius: BorderRadius.circular(4)),
+                          child: FittedBox(
+                              fit: BoxFit.scaleDown,
+                              child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Text(period.label,
+                                        style: const TextStyle(fontSize: 10)),
+                                  ])),
+                        )),
+                  )),
+              ]),
+            ),
+            const SizedBox(height: 9),
+            if (_showInfo) ...[
+              Container(
+                  padding: const EdgeInsets.only(left: 9),
+                  decoration: BoxDecoration(
+                      color: _panel, borderRadius: BorderRadius.circular(4)),
+                  child: Row(children: [
+                    const Icon(Icons.info, color: Color(0xFF388AF6), size: 20),
+                    const SizedBox(width: 7),
+                    const Expanded(
+                        child: Text(
+                            'History is available locally without an account. Imported events do not describe complete offline sessions.',
+                            style: TextStyle(fontSize: 8))),
+                    IconButton(
+                        tooltip: 'Dismiss history notice',
+                        onPressed: () => setState(() => _showInfo = false),
+                        icon: const Icon(Icons.close, color: _ink, size: 18)),
+                  ])),
+              const SizedBox(height: 9),
+            ],
+            Container(
+                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
                 decoration: BoxDecoration(
-                    color: _panel, borderRadius: BorderRadius.circular(4)),
+                    color: _panel.withValues(alpha: 0.8),
+                    borderRadius: BorderRadius.circular(4)),
                 child: Row(children: [
-                  const Icon(Icons.info, color: Color(0xFF388AF6), size: 20),
-                  const SizedBox(width: 7),
-                  const Expanded(
+                  Expanded(
                       child: Text(
-                          '30 Days and This Year require a free account to unlock long-term cloud history.',
-                          style: TextStyle(fontSize: 8))),
-                  IconButton(
-                      tooltip: 'Dismiss history notice',
-                      onPressed: () => setState(() => _showInfo = false),
-                      icon: const Icon(Icons.close, color: _ink, size: 18)),
+                          _preview
+                              ? 'SAMPLE PREVIEW • Not your readings'
+                              : activeRecords.isEmpty
+                                  ? 'No recorded sensor data yet'
+                                  : 'Recorded sensor data',
+                          style: const TextStyle(
+                              fontSize: 9, fontWeight: FontWeight.w600))),
+                  TextButton(
+                      onPressed: () => setState(() => _preview = !_preview),
+                      style: TextButton.styleFrom(
+                          foregroundColor: _ink,
+                          minimumSize: const Size(0, 28),
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          padding: const EdgeInsets.symmetric(horizontal: 6)),
+                      child: Text(_preview ? 'Exit preview' : 'Preview charts',
+                          style: const TextStyle(fontSize: 9))),
                 ])),
             const SizedBox(height: 9),
-          ],
-          Container(
-              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
-              decoration: BoxDecoration(
-                  color: _panel.withValues(alpha: 0.8),
-                  borderRadius: BorderRadius.circular(4)),
-              child: Row(children: [
-                Expanded(
-                    child: Text(
-                        _preview
-                            ? 'SAMPLE PREVIEW • Not your readings'
-                            : activeRecords.isEmpty
-                                ? 'No recorded sensor data yet'
-                                : 'Recorded sensor data',
-                        style: const TextStyle(
-                            fontSize: 9, fontWeight: FontWeight.w600))),
-                TextButton(
-                    onPressed: () => setState(() => _preview = !_preview),
-                    style: TextButton.styleFrom(
-                        foregroundColor: _ink,
-                        minimumSize: const Size(0, 28),
-                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        padding: const EdgeInsets.symmetric(horizontal: 6)),
-                    child: Text(_preview ? 'Exit preview' : 'Preview charts',
-                        style: const TextStyle(fontSize: 9))),
-              ])),
-          const SizedBox(height: 9),
-          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Expanded(
-                child: _SummaryCard(
-                    icon: Icons.timer_outlined,
-                    color: const Color(0xFF00C700),
-                    title: 'Active Monitoring Time',
-                    value: wearDuration(summary.totalSeconds),
-                    subtitle: 'Total duration')),
-            const SizedBox(width: 8),
-            Expanded(
-                child: _SummaryCard(
-                    icon: Icons.speed,
-                    color: const Color(0xFF388AF6),
-                    title: 'Average Time to Correction',
-                    value: summary.correctionFor() == null
-                        ? '—'
-                        : '${summary.correctionFor()!.toStringAsFixed(1)}s',
-                    subtitle: 'Average time to correct')),
-            const SizedBox(width: 8),
-            Expanded(
-                child: _SummaryCard(
-                    icon: Icons.airline_seat_recline_extra_rounded,
-                    color: const Color(0xFFFF7043),
-                    title: 'Total Posture Events',
-                    value: '${summary.totalSlouchEvents}',
-                    subtitle: 'Total corrected events')),
-          ]),
-          const SizedBox(height: 10),
+            Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Expanded(
+                  child: _SummaryCard(
+                      icon: Icons.timer_outlined,
+                      color: const Color(0xFF00C700),
+                      title: 'Active Monitoring Time',
+                      value: wearDuration(summary.totalSeconds),
+                      subtitle: 'Total duration')),
+              const SizedBox(width: 8),
+              Expanded(
+                  child: _SummaryCard(
+                      icon: Icons.speed,
+                      color: const Color(0xFF388AF6),
+                      title: 'Average Time to Correction',
+                      value: summary.correctionFor() == null
+                          ? '—'
+                          : '${summary.correctionFor()!.toStringAsFixed(1)}s',
+                      subtitle: 'Average time to correct')),
+              const SizedBox(width: 8),
+              Expanded(
+                  child: _SummaryCard(
+                      icon: Icons.airline_seat_recline_extra_rounded,
+                      color: const Color(0xFFFF7043),
+                      title: 'Total Posture Events',
+                      value: '${summary.totalSlouchEvents}',
+                      subtitle: 'Total corrected events')),
+            ]),
+            const SizedBox(height: 10),
 
-          // ── Data Continuity Notice ──
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-            decoration: BoxDecoration(
-              color: const Color(0xFF388AF6).withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(
-                  color: const Color(0xFF388AF6).withValues(alpha: 0.25)),
-            ),
-            child: Row(
-              children: const [
-                Icon(Icons.sensors_rounded, size: 14, color: _ink),
-                SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    'Data Continuity: Sensor intervals reflect active, connected monitoring. Bluetooth disconnections and dropouts are excluded from posture calculations.',
-                    style: TextStyle(
-                      fontSize: 8.5,
-                      color: _ink,
-                      fontWeight: FontWeight.w500,
+            // ── Data Continuity Notice ──
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: const Color(0xFF388AF6).withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(
+                    color: const Color(0xFF388AF6).withValues(alpha: 0.25)),
+              ),
+              child: Row(
+                children: const [
+                  Icon(Icons.sensors_rounded, size: 14, color: _ink),
+                  SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      'Data Continuity: Sensor intervals reflect active, connected monitoring. Bluetooth disconnections and dropouts are excluded from posture calculations.',
+                      style: TextStyle(
+                        fontSize: 8.5,
+                        color: _ink,
+                        fontWeight: FontWeight.w500,
+                      ),
                     ),
                   ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 10),
-
-          // ── Detailed Session Summary Card ──
-          _SessionSummaryCard(summary: summary),
-          const SizedBox(height: 10),
-
-          _ChartCard(
-              letter: 'A',
-              title: _period == AnalyticsPeriod.today
-                  ? 'Hourly Posture Event Frequency'
-                  : 'Daily Posture Event Frequency',
-              subtitle: _period == AnalyticsPeriod.today
-                  ? 'Hourly Slouch Frequency'
-                  : 'Daily Slouch Frequency',
-              child: summary.records.isEmpty
-                  ? const _EmptyChart()
-                  : _FrequencyChart(summary: summary)),
-          const SizedBox(height: 10),
-          _ChartCard(
-              letter: 'B',
-              title: 'Time-in-Zone Ratio',
-              child: summary.records.isEmpty
-                  ? const _EmptyChart()
-                  : _ZoneChart(summary: summary)),
-          const SizedBox(height: 10),
-          _ChartCard(
-              letter: 'C',
-              title: 'Posture Deviation Trend',
-              child: summary.records.isEmpty
-                  ? const _EmptyChart()
-                  : _TrendChart(summary: summary)),
-          const SizedBox(height: 10),
-          _ChartCard(
-              letter: 'D',
-              title: 'Mode Comparison',
-              child: _ModeChart(summary: summary)),
-          const SizedBox(height: 10),
-
-          // ── Session History ──
-          _SessionHistoryCard(
-            sessions: _getEffectiveSessions(now),
-            period: _period,
-            now: now,
-          ),
-          const SizedBox(height: 10),
-
-          // ── Event Timeline ──
-          _EventTimelineCard(
-            records: summary.records,
-          ),
-          const SizedBox(height: 18),
-          Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                  color: const Color(0xFF55BCE0),
-                  borderRadius: BorderRadius.circular(5)),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(children: [
-                    const Icon(Icons.description, color: _ink, size: 28),
-                    const SizedBox(width: 8),
-                    Expanded(
-                        child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                          const Text('Export Your Data',
-                              style: TextStyle(
-                                  fontSize: 14, fontWeight: FontWeight.bold)),
-                          Text(
-                              summary.records.isEmpty
-                                  ? 'No sensor readings recorded for this period.'
-                                  : _preview
-                                      ? 'Sample records for the selected period.'
-                                      : 'Telemetry and posture events for this period.',
-                              style: const TextStyle(fontSize: 9)),
-                        ])),
-                    const SizedBox(width: 6),
-                    TextButton.icon(
-                        key: const ValueKey('export-csv'),
-                        onPressed: _exporting
-                            ? null
-                            : () {
-                                if (summary.records.isEmpty) {
-                                  _showNoDataExportDialog();
-                                } else {
-                                  _export(summary);
-                                }
-                              },
-                        style: TextButton.styleFrom(
-                            backgroundColor: _panel,
-                            foregroundColor: _ink,
-                            padding: const EdgeInsets.symmetric(horizontal: 8)),
-                        icon: const Icon(Icons.download, size: 16),
-                        label: Text(_exporting ? 'Exporting…' : csvActionLabel,
-                            style: const TextStyle(
-                                fontSize: 9, fontWeight: FontWeight.bold))),
-                  ]),
-                  if (summary.records.isEmpty) ...[
-                    const SizedBox(height: 8),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 5),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.08),
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: Row(
-                        children: const [
-                          Icon(Icons.info_outline, size: 14, color: _ink),
-                          SizedBox(width: 6),
-                          Expanded(
-                            child: Text(
-                              'Note: You cannot download or export analytics into CSV without any data or readings.',
-                              style: TextStyle(
-                                  fontSize: 8.5,
-                                  color: _ink,
-                                  fontWeight: FontWeight.w500),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
                 ],
-              )),
-        ]),
+              ),
+            ),
+            const SizedBox(height: 10),
+
+            // ── Detailed Session Summary Card ──
+            _SessionSummaryCard(summary: summary),
+            const SizedBox(height: 10),
+
+            _ChartCard(
+                letter: 'A',
+                title: _period == AnalyticsPeriod.today
+                    ? 'Hourly Posture Event Frequency'
+                    : 'Daily Posture Event Frequency',
+                subtitle: _period == AnalyticsPeriod.today
+                    ? 'Hourly Slouch Frequency'
+                    : 'Daily Slouch Frequency',
+                child: summary.records.isEmpty
+                    ? const _EmptyChart()
+                    : _FrequencyChart(summary: summary)),
+            const SizedBox(height: 10),
+            _ChartCard(
+                letter: 'B',
+                title: 'Time-in-Zone Ratio',
+                child: summary.records.isEmpty
+                    ? const _EmptyChart()
+                    : _ZoneChart(summary: summary)),
+            const SizedBox(height: 10),
+            _ChartCard(
+                letter: 'C',
+                title: 'Posture Deviation Trend',
+                child: summary.records.isEmpty
+                    ? const _EmptyChart()
+                    : _TrendChart(summary: summary)),
+            const SizedBox(height: 10),
+            _ChartCard(
+                letter: 'D',
+                title: 'Mode Comparison',
+                child: _ModeChart(summary: summary)),
+            const SizedBox(height: 10),
+
+            // ── Session History ──
+            _SessionHistoryCard(
+              sessions: _getEffectiveSessions(now),
+              period: _period,
+              now: now,
+            ),
+            const SizedBox(height: 10),
+
+            // ── Event Timeline ──
+            _EventTimelineCard(
+              records: summary.records,
+            ),
+            const SizedBox(height: 18),
+            Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                    color: const Color(0xFF55BCE0),
+                    borderRadius: BorderRadius.circular(5)),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(children: [
+                      const Icon(Icons.description, color: _ink, size: 28),
+                      const SizedBox(width: 8),
+                      Expanded(
+                          child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                            const Text('Export Your Data',
+                                style: TextStyle(
+                                    fontSize: 14, fontWeight: FontWeight.bold)),
+                            Text(
+                                summary.records.isEmpty
+                                    ? 'No sensor readings recorded for this period.'
+                                    : _preview
+                                        ? 'Sample records for the selected period.'
+                                        : 'Telemetry and posture events for this period.',
+                                style: const TextStyle(fontSize: 9)),
+                          ])),
+                      const SizedBox(width: 6),
+                      TextButton.icon(
+                          key: const ValueKey('export-csv'),
+                          onPressed: _exporting
+                              ? null
+                              : () {
+                                  if (summary.records.isEmpty) {
+                                    _showNoDataExportDialog();
+                                  } else {
+                                    _export(summary);
+                                  }
+                                },
+                          style: TextButton.styleFrom(
+                              backgroundColor: _panel,
+                              foregroundColor: _ink,
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 8)),
+                          icon: const Icon(Icons.download, size: 16),
+                          label: Text(
+                              _exporting ? 'Exporting…' : csvActionLabel,
+                              style: const TextStyle(
+                                  fontSize: 9, fontWeight: FontWeight.bold))),
+                    ]),
+                    if (summary.records.isEmpty) ...[
+                      const SizedBox(height: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 5),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.08),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Row(
+                          children: const [
+                            Icon(Icons.info_outline, size: 14, color: _ink),
+                            SizedBox(width: 6),
+                            Expanded(
+                              child: Text(
+                                'Note: You cannot download or export analytics into CSV without any data or readings.',
+                                style: TextStyle(
+                                    fontSize: 8.5,
+                                    color: _ink,
+                                    fontWeight: FontWeight.w500),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ],
+                )),
+          ]),
         ),
       ),
     );
@@ -661,8 +703,8 @@ FlTitlesData _titles(AnalyticsSummary summary,
     topTitles: _hiddenAxis,
     rightTitles: _hiddenAxis,
     leftTitles: AxisTitles(
-        axisNameWidget: Text(degrees ? 'Average pitch (°)' : 'Total count',
-            style: _small),
+        axisNameWidget:
+            Text(degrees ? 'Average pitch (°)' : 'Total count', style: _small),
         axisNameSize: 16,
         sideTitles: SideTitles(
             showTitles: true,
@@ -678,8 +720,7 @@ FlTitlesData _titles(AnalyticsSummary summary,
               return SideTitleWidget(
                 meta: meta,
                 space: 4,
-                child: Text('${v.toInt()}${degrees ? '°' : ''}',
-                    style: _small),
+                child: Text('${v.toInt()}${degrees ? '°' : ''}', style: _small),
               );
             })),
     bottomTitles: AxisTitles(
@@ -688,9 +729,7 @@ FlTitlesData _titles(AnalyticsSummary summary,
             interval: 1,
             reservedSize: 24,
             getTitlesWidget: (v, meta) {
-              if (v != v.roundToDouble() ||
-                  v < 0 ||
-                  v >= summary.bucketCount) {
+              if (v != v.roundToDouble() || v < 0 || v >= summary.bucketCount) {
                 return const SizedBox.shrink();
               }
               return Padding(
@@ -700,6 +739,7 @@ FlTitlesData _titles(AnalyticsSummary summary,
             })),
   );
 }
+
 FlBorderData get _border => FlBorderData(
     show: true,
     border: const Border(
