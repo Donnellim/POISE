@@ -1,3 +1,5 @@
+import '../database/sync_service.dart';
+import '../database/device_posture_event.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/services.dart';
@@ -28,6 +30,8 @@ class PoiseBleConfig {
   /// FFE2 receives ASCII configuration, synchronization and session commands.
   static const String calibrationCharacteristicUuid =
       '0000ffe2-0000-1000-8000-00805f9b34fb';
+
+  static const eventCharacteristicUuid = '0000ffe3-0000-1000-8000-00805f9b34fb';
 
   /// Standard Bluetooth SIG Battery Service UUID (0x180F)
   static const String batteryServiceUuid =
@@ -132,11 +136,19 @@ class PoiseBleService extends ChangeNotifier {
   bool vibrationEnabled = true;
   String? protocolError;
   bool _receivedState = false;
+  bool _receivedSession = false;
+  bool get _snapshotComplete =>
+      _receivedState &&
+      _receivedConfig &&
+      ((deviceState != PoiseDeviceState.monitoring &&
+              deviceState != PoiseDeviceState.paused) ||
+          _receivedSession);
   bool _receivedConfig = false;
   ActivityMode? _snapshotMode;
   bool? _snapshotVibration;
   Completer<bool>? _pending;
   Set<String> _expected = {};
+  String _activeCommand = '';
   bool get commandPending => _pending != null;
   bool get controlsEnabled => isModeSynchronized && !commandPending;
   bool get sessionControlsEnabled =>
@@ -151,6 +163,140 @@ class PoiseBleService extends ChangeNotifier {
   @visibleForTesting
   void receiveMessage(String message) =>
       _handleIncomingTelemetry(utf8.encode(message));
+
+  int sessionEndRevision = 0;
+  bool clockSynchronized = false;
+  String clockStatus = 'required';
+  int pendingEventCount = 0;
+  bool importAuthorized = false;
+  bool importing = false;
+  String? importError;
+  int connectionGeneration = 0;
+  BluetoothCharacteristic? _eventChar;
+  @visibleForTesting
+  Future<List<int>> Function()? eventReader;
+  @visibleForTesting
+  Future<void> Function(DevicePostureEvent)? eventCommitter;
+  Future<void> _commandQueue = Future.value();
+  int _queuedCommands = 0;
+  String? _nextReply;
+  String? _ackReply;
+  bool _refreshRequested = false;
+  bool _importRecheckRequested = false;
+  bool _refreshRunning = false;
+
+  Future<bool> synchronizeClock() async {
+    return _exchange('TIME:SYNC:',
+        {'TIME:SYNC:OK', 'TIME:SYNC:DEFERRED', 'TIME:SYNC:APPLIED'});
+  }
+
+  Future<void> _initializeProtocol() async {
+    await synchronizeClock();
+    if (!isConnected) return;
+    await syncSavedModeToHardware();
+    if (isConnected) await checkStoredEvents();
+  }
+
+  Future<bool> checkStoredEvents() =>
+      _exchange('EVENTLOG:STATUS', {'EVENTLOG:PENDING:'});
+
+  void _requestLifecycleRefresh() {
+    _refreshRequested = true;
+    if (_refreshRunning) return;
+    _refreshRunning = true;
+    unawaited(() async {
+      try {
+        while (_refreshRequested && isConnected) {
+          _refreshRequested = false;
+          // Queue behind the command whose notifications triggered this refresh.
+          await Future<void>.value();
+          await _commandQueue;
+          if (!isConnected) break;
+          await syncSavedModeToHardware();
+          await checkStoredEvents();
+          if (importAuthorized && !importing) await importStoredEvents();
+        }
+      } finally {
+        _refreshRunning = false;
+      }
+    }());
+  }
+
+  Future<void> importStoredEvents() async {
+    if (!isConnected || importing) return;
+    final generation = connectionGeneration;
+    bool current() => isConnected && generation == connectionGeneration;
+    importing = true;
+    importError = null;
+    _changed();
+    try {
+      if (!importAuthorized) {
+        if (!await _exchange('EVENTLOG:START', {'EVENTLOG:AUTHORIZED'}) ||
+            !current()) {
+          throw StateError('Device did not authorize import');
+        }
+        importAuthorized = true;
+      }
+      while (current()) {
+        if (!await _exchange(
+                'EVENTLOG:NEXT', {'EVENTLOG:RECORD_READY', 'EVENTLOG:EMPTY'}) ||
+            !current()) {
+          throw StateError('Unable to request stored event');
+        }
+        if (_nextReply == 'EVENTLOG:EMPTY') {
+          pendingEventCount = 0;
+          if (_importRecheckRequested) {
+            _importRecheckRequested = false;
+            await checkStoredEvents();
+            continue;
+          }
+          break;
+        }
+        final bytes = await (eventReader != null
+                ? eventReader!()
+                : _eventChar != null
+                    ? _eventChar!.read()
+                    : Future<List<int>>.error(
+                        StateError('Readable FFE3 unavailable')))
+            .timeout(responseTimeout);
+        if (!current()) return;
+        final event = DevicePostureEvent.parse(
+            jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>);
+        await (eventCommitter != null
+            ? eventCommitter!(event)
+            : PoiseLocalDatabase.instance.commitDeviceEvent(event));
+        if (!current()) return;
+        // The durable SQLite commit (including matching duplicates) is the ACK boundary.
+        bool acknowledged = false;
+        for (var attempt = 0; attempt < 3 && current(); attempt++) {
+          final received = await _exchange('EVENTLOG:ACK:${event.eventId}',
+              {'EVENTLOG:ACK:OK', 'EVENTLOG:ACK:FAILED'});
+          if (!current()) return;
+          if (received && _ackReply == 'EVENTLOG:ACK:OK') {
+            acknowledged = true;
+            break;
+          }
+          if (!received || _ackReply != 'EVENTLOG:ACK:FAILED') break;
+        }
+        if (!acknowledged) {
+          throw StateError(
+              'Event acknowledgement failed; retry import to resume');
+        }
+        if (pendingEventCount > 0) pendingEventCount--;
+      }
+    } catch (error) {
+      if (current()) {
+        importError =
+            'Import stopped: $error. Unacknowledged records remain on the device.';
+      }
+    } finally {
+      if (generation == connectionGeneration) {
+        importing = false;
+        _changed();
+        if (!simulateForTesting) unawaited(SyncService.instance.syncToCloud());
+      }
+    }
+  }
 
   void _changed() {
     notifyListeners();
@@ -167,15 +313,86 @@ class PoiseBleService extends ChangeNotifier {
   }
 
   bool _handleProtocol(String message) {
+    if (message.startsWith('TIME:SYNC:') || message.startsWith('EVENTLOG:')) {
+      if (message == 'EVENTLOG:RECORD_READY' &&
+          importing &&
+          !(_activeCommand == 'EVENTLOG:NEXT' &&
+              _pending != null &&
+              !_pending!.isCompleted)) {
+        _importRecheckRequested = true;
+      }
+      if (message.startsWith('TIME:SYNC:')) {
+        clockStatus = message.substring('TIME:SYNC:'.length).toLowerCase();
+        clockSynchronized = clockStatus == 'ok' || clockStatus == 'applied';
+      }
+      if (message.startsWith('EVENTLOG:PENDING:')) {
+        final count =
+            int.tryParse(message.substring('EVENTLOG:PENDING:'.length));
+        if (count == null || count < 0) return true;
+        pendingEventCount = count;
+      }
+      if (message == 'EVENTLOG:CONSENT_REQUIRED') importAuthorized = false;
+      if (_pending != null && !_pending!.isCompleted) {
+        if (_expected.contains(message) ||
+            (_expected.contains('EVENTLOG:PENDING:') &&
+                message.startsWith('EVENTLOG:PENDING:'))) {
+          if (message == 'EVENTLOG:EMPTY' ||
+              message == 'EVENTLOG:RECORD_READY') {
+            _nextReply = message;
+          }
+          if (message.startsWith('EVENTLOG:ACK:')) _ackReply = message;
+          _pending!.complete(true);
+        } else if ([
+          'TIME:SYNC:FAILED',
+          'TIME:SYNC:REJECTED',
+          'TIME:SYNC:REQUIRED',
+          'EVENTLOG:CONSENT_REQUIRED',
+          'EVENTLOG:UNAVAILABLE',
+          'EVENTLOG:ACK:REJECTED'
+        ].contains(message)) {
+          if (message == 'EVENTLOG:EMPTY' ||
+              message == 'EVENTLOG:RECORD_READY') {
+            _nextReply = message;
+          }
+          if (message.startsWith('EVENTLOG:ACK:')) _ackReply = message;
+          _pending!.complete(false);
+        }
+      }
+      if (message == 'EVENTLOG:RECORD_READY' &&
+          importAuthorized &&
+          !importing) {
+        _requestLifecycleRefresh();
+      }
+      _changed();
+      return true;
+    }
+    if (message == 'SESSION:ENDED') sessionEndRevision++;
+    if (message == 'SESSION:STARTED') {
+      _sessionSnapshot = null;
+      _deviceSessionSeconds = 0;
+    }
+    if (message == 'SESSION:ENDED' ||
+        message == 'SESSION:STARTED' ||
+        message.startsWith('MODE:APPLIED:')) {
+      _requestLifecycleRefresh();
+    }
+
     if (message.startsWith('SESSION:SYNC:')) {
       debugPrint('[PoiseBleService] RX FFE1 $message');
       final match = RegExp(r'^SESSION:SYNC:([^,\s]+),ELAPSED_MS:([0-9]+)$')
           .firstMatch(message);
       final milliseconds = match == null ? null : int.tryParse(match[2]!);
       if (milliseconds != null) {
+        _receivedSession = true;
         _sessionSnapshot = PoiseSessionSnapshot(
             match![1]!, Duration(milliseconds: milliseconds));
         _deviceSessionSeconds = _sessionSnapshot!.elapsed.inSeconds;
+        if (_pending != null &&
+            !_pending!.isCompleted &&
+            _expected.isEmpty &&
+            _snapshotComplete) {
+          _pending!.complete(true);
+        }
         _changed();
       }
       return true;
@@ -215,7 +432,9 @@ class PoiseBleService extends ChangeNotifier {
           protocolError = deviceState == PoiseDeviceState.error
               ? 'Device reported an error.'
               : 'Charging: session controls unavailable.';
-          if (_expected.isNotEmpty &&
+          if (!_activeCommand.startsWith('TIME:') &&
+              !_activeCommand.startsWith('EVENTLOG:') &&
+              _expected.isNotEmpty &&
               _pending != null &&
               !_pending!.isCompleted) {
             _pending!.complete(false);
@@ -236,7 +455,7 @@ class PoiseBleService extends ChangeNotifier {
     }
     if (_pending != null && !_pending!.isCompleted) {
       if (_expected.contains(message) ||
-          (_expected.isEmpty && _receivedState && _receivedConfig)) {
+          (_expected.isEmpty && _snapshotComplete)) {
         _pending!.complete(true);
       }
     }
@@ -244,8 +463,29 @@ class PoiseBleService extends ChangeNotifier {
     return true;
   }
 
-  Future<bool> _exchange(String command, Set<String> expected) async {
+  Future<bool> _exchange(String command, Set<String> expected) {
+    final generation = connectionGeneration;
+    Future<bool> run() async {
+      if (generation != connectionGeneration) return false;
+      return _performExchange(command, expected);
+    }
+
+    final result =
+        (_queuedCommands++ == 0 ? run() : _commandQueue.then((_) => run()))
+            .whenComplete(() => _queuedCommands--);
+    _commandQueue =
+        result.then<void>((_) {}, onError: (Object _, StackTrace __) {});
+    return result;
+  }
+
+  Future<bool> _performExchange(String command, Set<String> expected) async {
     if (!isConnected || commandPending) return false;
+    if (command == 'TIME:SYNC:') {
+      command += DateTime.now().toUtc().millisecondsSinceEpoch.toString();
+    }
+    if (command == 'EVENTLOG:NEXT') _nextReply = null;
+    if (command.startsWith('EVENTLOG:ACK:')) _ackReply = null;
+    _activeCommand = command;
     final pending = Completer<bool>();
     _pending = pending;
     _expected = expected;
@@ -266,6 +506,12 @@ class PoiseBleService extends ChangeNotifier {
               'STATE:${deviceState == PoiseDeviceState.chargingLockout ? 'CHARGING_LOCKOUT' : deviceState == PoiseDeviceState.calibrationReady ? 'CALIBRATION_READY' : deviceState.name.toUpperCase()}');
           receiveMessage(
               'CONFIG:MODE:${_hardwareActiveMode.index + 1},VIB:${vibrationEnabled ? 1 : 0}');
+          if (deviceState == PoiseDeviceState.monitoring ||
+              deviceState == PoiseDeviceState.paused) {
+            receiveMessage('SESSION:SYNC:simulation,ELAPSED_MS:0');
+          }
+        } else if (command == 'EVENTLOG:STATUS') {
+          receiveMessage('EVENTLOG:PENDING:0');
         } else {
           receiveMessage(expected.first);
         }
@@ -711,6 +957,11 @@ class PoiseBleService extends ChangeNotifier {
     if (_connecting) return false;
     if (device.rawDevice == null && !allowsSimulation) return false;
     _connecting = true;
+    connectionGeneration++;
+    clockSynchronized = false;
+    clockStatus = 'required';
+    importAuthorized = false;
+    pendingEventCount = 0;
     _isModeSynchronized = false;
     _watchAdapter();
     await stopScan();
@@ -721,7 +972,7 @@ class PoiseBleService extends ChangeNotifier {
       _connectedDeviceName = device.name;
       _setState(PoiseBleState.connected);
       await _rememberDevice(device);
-      await syncSavedModeToHardware();
+      await _initializeProtocol();
       await DeviceSession.completeSetup();
       _connecting = false;
       return true;
@@ -752,7 +1003,7 @@ class PoiseBleService extends ChangeNotifier {
 
       _setState(PoiseBleState.connected);
       await _rememberDevice(device);
-      await syncSavedModeToHardware();
+      await _initializeProtocol();
       await DeviceSession.completeSetup();
       _connecting = false;
       return true;
@@ -793,6 +1044,11 @@ class PoiseBleService extends ChangeNotifier {
             }
           }
 
+          if (service.uuid == Guid(PoiseBleConfig.serviceUuid) &&
+              char.uuid == Guid(PoiseBleConfig.eventCharacteristicUuid) &&
+              char.properties.read) {
+            _eventChar = char;
+          }
           if (service.uuid == Guid(PoiseBleConfig.serviceUuid) &&
               char.uuid == Guid(PoiseBleConfig.calibrationCharacteristicUuid)) {
             _calibrationChar = char;
@@ -1172,6 +1428,15 @@ class PoiseBleService extends ChangeNotifier {
   }
 
   void _handleDisconnection() {
+    connectionGeneration++;
+    clockSynchronized = false;
+    clockStatus = 'required';
+    importAuthorized = false;
+    importing = false;
+    pendingEventCount = 0;
+    _eventChar = null;
+    _importRecheckRequested = false;
+    _refreshRequested = false;
     _stopMockTelemetryStream();
     _activeDevice = null;
     _connectedDeviceName = null;
@@ -1182,6 +1447,7 @@ class PoiseBleService extends ChangeNotifier {
     _calibrationChar = null;
     if (_pending != null && !_pending!.isCompleted) _pending!.complete(false);
     _receivedState = false;
+    _receivedSession = false;
     _receivedConfig = false;
     protocolError = 'Device disconnected. Reconnect to continue.';
     _isModeSynchronized = false;
@@ -1199,6 +1465,13 @@ class PoiseBleService extends ChangeNotifier {
 
   Future<bool> sendSessionCommand(String command) async {
     if (!sessionControlsEnabled) return false;
+    if (['CALIBRATION:READY', 'CALIBRATE', 'SESSION:START'].contains(command) &&
+        !clockSynchronized) {
+      protocolError =
+          'Synchronize the device clock before starting a new session.';
+      _changed();
+      return false;
+    }
     if (command.startsWith('CALIBRATION:') &&
         deviceState != PoiseDeviceState.idle &&
         deviceState != PoiseDeviceState.calibrationReady) {
@@ -1224,6 +1497,7 @@ class PoiseBleService extends ChangeNotifier {
     if (!isConnected || commandPending) return false;
     _isModeSynchronized = false;
     _receivedState = false;
+    _receivedSession = false;
     _receivedConfig = false;
     final success = await _exchange('STATE:SYNC', {});
     _isModeSynchronized = success && _receivedState && _receivedConfig;
@@ -1308,6 +1582,20 @@ class PoiseBleService extends ChangeNotifier {
 
   /// Reset internal state for tests or fresh sessions
   void resetForTesting() {
+    connectionGeneration++;
+    clockSynchronized = false;
+    clockStatus = 'required';
+    importAuthorized = false;
+    importing = false;
+    pendingEventCount = 0;
+    importError = null;
+    eventReader = null;
+    eventCommitter = null;
+    _eventChar = null;
+    _importRecheckRequested = false;
+    _refreshRequested = false;
+    _importRecheckRequested = false;
+    _commandQueue = Future.value();
     stopMockTelemetryStream();
     _adapterSubscription?.cancel();
     _adapterSubscription = null;

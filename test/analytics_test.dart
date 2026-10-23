@@ -104,8 +104,8 @@ void main() {
       expect(find.text('Daily Slouch Frequency'), findsOneWidget);
       await tester.tap(find.text('30 Days'));
       await tester.pumpAndSettle();
-      expect(find.text('Long-term history'), findsOneWidget);
-      await tester.tap(find.text('Got it'));
+      expect(find.text('Long-term history'), findsNothing);
+      await tester.tap(find.text('7 Days'));
       await tester.pumpAndSettle();
       expect(find.text('Daily Slouch Frequency'), findsOneWidget);
       await tester.tap(find.byTooltip('Dismiss history notice'));

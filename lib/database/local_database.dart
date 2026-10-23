@@ -1,3 +1,4 @@
+import 'device_posture_event.dart';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
@@ -15,7 +16,7 @@ class PoiseLocalDatabase {
   static final PoiseLocalDatabase instance = PoiseLocalDatabase._();
 
   static const String dbName = 'poise_local.db';
-  static const int dbVersion = 1;
+  static const int dbVersion = 2;
 
   Database? _db;
 
@@ -41,7 +42,8 @@ class PoiseLocalDatabase {
 
   /// Initialize database connection and ensure tables and default modes exist.
   Future<Database> init({String? customPath}) async {
-    if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
+    if (!kIsWeb &&
+        (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
       sqfliteFfiInit();
       databaseFactory = databaseFactoryFfi;
     }
@@ -62,6 +64,8 @@ class PoiseLocalDatabase {
           path,
           version: dbVersion,
           onCreate: _onCreate,
+          onUpgrade: (db, oldVersion, newVersion) async =>
+              _createDeviceEvents(db),
           onOpen: _onOpen,
         );
         _db = db;
@@ -73,19 +77,16 @@ class PoiseLocalDatabase {
             path,
             version: dbVersion,
             onCreate: _onCreate,
+            onUpgrade: (db, oldVersion, newVersion) async =>
+                _createDeviceEvents(db),
             onOpen: _onOpen,
           );
           _db = db;
           return db;
         } catch (_) {
-          final db = await openDatabase(
-            inMemoryDatabasePath,
-            version: dbVersion,
-            onCreate: _onCreate,
-            onOpen: _onOpen,
-          );
-          _db = db;
-          return db;
+          // Never downgrade to volatile storage: a committed import permits
+          // the wearable to permanently remove its only copy.
+          rethrow;
         }
       }
     }
@@ -94,13 +95,58 @@ class PoiseLocalDatabase {
       path,
       version: dbVersion,
       onCreate: _onCreate,
+      onUpgrade: (db, oldVersion, newVersion) async => _createDeviceEvents(db),
       onOpen: _onOpen,
     );
     _db = db;
     return db;
   }
 
+  Future<void> _createDeviceEvents(Database db) => db.execute('''
+    CREATE TABLE IF NOT EXISTS device_posture_events (
+      schema_version INTEGER NOT NULL, device_id TEXT NOT NULL, event_id TEXT NOT NULL,
+      session_id TEXT NOT NULL, start_time_ms INTEGER, end_time_ms INTEGER,
+      timestamp_status TEXT NOT NULL, mode_id INTEGER NOT NULL,
+      peak_deviation_deg REAL NOT NULL, vibration_count INTEGER NOT NULL,
+      correction_status TEXT NOT NULL, end_reason TEXT NOT NULL,
+      owner_id TEXT, synced INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY(device_id, event_id))
+  ''');
+
+  Future<void> commitDeviceEvent(DevicePostureEvent event,
+      {String? ownerId, bool synced = false}) async {
+    final db = await database;
+    await db.transaction((txn) async {
+      final rows = await txn.query('device_posture_events',
+          where: 'device_id = ? AND event_id = ?',
+          whereArgs: [event.data['device_id'], event.eventId]);
+      if (rows.isNotEmpty) {
+        if (DevicePostureEvent.fields
+            .any((key) => rows.first[key] != event.data[key])) {
+          throw StateError(
+              'Conflicting posture event: ${event.data['device_id']}/${event.eventId}');
+        }
+        return;
+      }
+      await txn.insert('device_posture_events',
+          {...event.data, 'owner_id': ownerId, 'synced': synced ? 1 : 0});
+    });
+    notifyDatabaseChanged();
+  }
+
+  Future<List<Map<String, dynamic>>> getDeviceEvents() async {
+    if (_isHeadlessTest) return [];
+    return (await database).query('device_posture_events',
+        orderBy: 'start_time_ms DESC, event_id');
+  }
+
+  Future<void> linkDeviceHistory(String userId) async {
+    await (await database).update('device_posture_events', {'owner_id': userId},
+        where: 'owner_id IS NULL');
+  }
+
   Future<void> _onCreate(Database db, int version) async {
+    await _createDeviceEvents(db);
     final batch = db.batch();
 
     // 1. Profiles Table
@@ -173,9 +219,11 @@ class PoiseLocalDatabase {
     // Indices for local performance
     batch.execute('CREATE INDEX idx_sessions_user ON sessions(user_id)');
     batch.execute('CREATE INDEX idx_sessions_synced ON sessions(synced)');
-    batch.execute('CREATE INDEX idx_events_session ON posture_events(session_id)');
+    batch.execute(
+        'CREATE INDEX idx_events_session ON posture_events(session_id)');
     batch.execute('CREATE INDEX idx_events_synced ON posture_events(synced)');
-    batch.execute('CREATE INDEX idx_events_occurred ON posture_events(occurred_at)');
+    batch.execute(
+        'CREATE INDEX idx_events_occurred ON posture_events(occurred_at)');
 
     // Seed default modes
     for (final mode in ModeModel.defaultModes) {
@@ -199,7 +247,8 @@ class PoiseLocalDatabase {
           'ALTER TABLE sessions ADD COLUMN baseline_angle REAL NOT NULL DEFAULT 0.0');
     } catch (_) {}
     try {
-      await db.execute('ALTER TABLE posture_events ADD COLUMN corrected_at TEXT');
+      await db
+          .execute('ALTER TABLE posture_events ADD COLUMN corrected_at TEXT');
     } catch (_) {}
     try {
       await db.execute(
@@ -417,7 +466,8 @@ class PoiseLocalDatabase {
     notifyDatabaseChanged();
   }
 
-  Future<void> updateSessionProgress(String sessionId, DateTime updatedAt) async {
+  Future<void> updateSessionProgress(
+      String sessionId, DateTime updatedAt) async {
     if (_isHeadlessTest) {
       notifyDatabaseChanged();
       return;
@@ -484,8 +534,8 @@ class PoiseLocalDatabase {
     final records = await getAllPostureRecords();
     final now = DateTime.now();
     final todayStart = DateTime(now.year, now.month, now.day);
-    final todayRecords = records
-        .where((r) => !r.at.isBefore(todayStart) && !r.at.isAfter(now));
+    final todayRecords =
+        records.where((r) => !r.at.isBefore(todayStart) && !r.at.isAfter(now));
     return todayRecords.fold<int>(0, (int sum, r) => sum + r.seconds);
   }
 
@@ -620,7 +670,8 @@ class PoiseLocalDatabase {
     notifyDatabaseChanged();
   }
 
-  Future<List<PostureEventModel>> getUnsyncedPostureEvents({int limit = 100}) async {
+  Future<List<PostureEventModel>> getUnsyncedPostureEvents(
+      {int limit = 100}) async {
     final db = await database;
     final res = await db.query(
       'posture_events',
@@ -676,7 +727,8 @@ class PoiseLocalDatabase {
     return res.map(PostureEventModel.fromMap).toList();
   }
 
-  Future<List<PostureEventModel>> getEventsForPeriod(DateTime start, DateTime end) async {
+  Future<List<PostureEventModel>> getEventsForPeriod(
+      DateTime start, DateTime end) async {
     final db = await database;
     final res = await db.query(
       'posture_events',
@@ -804,7 +856,8 @@ class PoiseLocalDatabase {
     final db = await database;
 
     final sessionRows = await db.query('sessions', orderBy: 'started_at ASC');
-    final eventRows = await db.query('posture_events', orderBy: 'occurred_at ASC');
+    final eventRows =
+        await db.query('posture_events', orderBy: 'occurred_at ASC');
 
     final eventsBySession = <String, List<Map<String, Object?>>>{};
     final orphanedEvents = <Map<String, Object?>>[];
@@ -850,8 +903,7 @@ class PoiseLocalDatabase {
 
       final modeId = sRow['mode_id'] as int? ?? 1;
       final mode = ModeModel.activityModeFromId(modeId);
-      var baselineAngle =
-          (sRow['baseline_angle'] as num?)?.toDouble() ?? 0.0;
+      var baselineAngle = (sRow['baseline_angle'] as num?)?.toDouble() ?? 0.0;
       if (baselineAngle.abs() > 180.0) baselineAngle /= 100.0;
       baselineAngle = baselineAngle.clamp(-60.0, 60.0);
       final sEvents = eventsBySession[sRow['id'] as String] ?? [];
@@ -879,7 +931,8 @@ class PoiseLocalDatabase {
             : null;
         final corrSec = (e['correction_time_sec'] as num?)?.toDouble() ??
             (e['duration_sec'] as num?)?.toDouble();
-        var pitch = (e['tilt_angle'] as num?)?.toDouble() ?? mode.angle.toDouble();
+        var pitch =
+            (e['tilt_angle'] as num?)?.toDouble() ?? mode.angle.toDouble();
         if (pitch.abs() > 180.0) pitch /= 100.0;
         pitch = pitch.clamp(-60.0, 60.0);
         final feedback = (e['feedback_triggered'] as int? ?? 0) == 1;
@@ -984,11 +1037,13 @@ class PoiseLocalDatabase {
   Future<bool> isDatabaseEmpty() async {
     final db = await database;
     final sessionCount = Sqflite.firstIntValue(
-      await db.rawQuery('SELECT COUNT(*) FROM sessions'),
-    ) ?? 0;
+          await db.rawQuery('SELECT COUNT(*) FROM sessions'),
+        ) ??
+        0;
     final eventCount = Sqflite.firstIntValue(
-      await db.rawQuery('SELECT COUNT(*) FROM posture_events'),
-    ) ?? 0;
+          await db.rawQuery('SELECT COUNT(*) FROM posture_events'),
+        ) ??
+        0;
     return sessionCount == 0 && eventCount == 0;
   }
 
@@ -1001,6 +1056,7 @@ class PoiseLocalDatabase {
   }
 
   Future<void> clearAllData() async {
+    await (await database).delete('device_posture_events');
     final db = await database;
     await db.delete('posture_events');
     await db.delete('sessions');
