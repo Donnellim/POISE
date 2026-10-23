@@ -2086,7 +2086,9 @@ class _DashboardTabState extends State<DashboardTab> {
                                     ),
                                     const SizedBox(height: 2),
                                     Text(
-                                      widget.activeMode.label,
+                                      PoiseBleService.instance.isConnected
+                                          ? widget.activeMode.label
+                                          : '---',
                                       style: const TextStyle(
                                           color: Colors.black,
                                           fontSize: 15,
@@ -2129,7 +2131,9 @@ class _DashboardTabState extends State<DashboardTab> {
                               ),
                               const SizedBox(height: 3),
                               Text(
-                                widget.activeMode.threshold,
+                                PoiseBleService.instance.isConnected
+                                    ? widget.activeMode.threshold
+                                    : '---',
                                 style: const TextStyle(
                                     color: Colors.black,
                                     fontSize: 15,
@@ -2272,11 +2276,13 @@ class _DashboardTabState extends State<DashboardTab> {
                   padding:
                       const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
                   decoration: BoxDecoration(
-                    color: !PoiseBleService.instance.sessionControlsEnabled
-                        ? Colors.grey
-                        : _isSessionRunning
-                            ? const Color(0xFFD32F2F)
-                            : const Color(0xFF2E7D32),
+                    color: !PoiseBleService.instance.isConnected
+                        ? const Color(0xFFA5DCF2)
+                        : !PoiseBleService.instance.sessionControlsEnabled
+                            ? const Color(0xFFDCE5E9)
+                            : _isSessionRunning
+                                ? const Color(0xFFD32F2F)
+                                : const Color(0xFF2E7D32),
                     borderRadius: BorderRadius.circular(16),
                     boxShadow: [
                       BoxShadow(
@@ -2293,14 +2299,18 @@ class _DashboardTabState extends State<DashboardTab> {
                         _isSessionRunning
                             ? Icons.stop_rounded
                             : Icons.play_arrow_rounded,
-                        color: Colors.white,
+                        color: PoiseBleService.instance.sessionControlsEnabled
+                            ? Colors.white
+                            : Colors.black54,
                         size: 15,
                       ),
                       const SizedBox(width: 3),
                       Text(
                         _isSessionRunning ? 'End Session' : 'Start Session',
-                        style: const TextStyle(
-                          color: Colors.white,
+                        style: TextStyle(
+                          color: PoiseBleService.instance.sessionControlsEnabled
+                            ? Colors.white
+                            : Colors.black54,
                           fontSize: 10.5,
                           fontWeight: FontWeight.bold,
                         ),

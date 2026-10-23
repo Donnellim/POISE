@@ -94,7 +94,8 @@ void main() {
     await tester.tap(find.text('Disconnect Device'));
     await tester.pumpAndSettle();
     expect(find.text('--°'), findsOneWidget);
-    expect(find.text(ActivityMode.commuting.threshold), findsOneWidget);
+    expect(find.text(ActivityMode.commuting.threshold), findsNothing);
+    expect(find.text('---'), findsNWidgets(2));
     expect(find.text('--:--:--'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());

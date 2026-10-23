@@ -54,11 +54,14 @@ void main() {
     final summary = find.byKey(const ValueKey('active-mode-summary'));
     expect(find.descendant(of: summary, matching: find.byType(Icon)), findsNothing);
     expect(find.text('--:--:--'), findsOneWidget);
+    expect(find.text('---'), findsNWidgets(2));
+    expect(find.text(ActivityMode.normal.label), findsNothing);
+    expect(find.text(ActivityMode.normal.threshold), findsNothing);
     final toggle = find.byKey(const ValueKey('session-toggle'));
     expect(tester.widget<GestureDetector>(toggle).onTap, isNull);
     final background = tester.widget<Container>(
         find.descendant(of: toggle, matching: find.byType(Container)).first);
-    expect((background.decoration as BoxDecoration).color, Colors.grey);
+    expect((background.decoration as BoxDecoration).color, const Color(0xFFDCE5E9));
     await tester.tap(toggle);
     await tester.pump();
     expect(commands, isEmpty);
