@@ -260,8 +260,14 @@ class PoiseBleService extends ChangeNotifier {
                         StateError('Readable FFE3 unavailable')))
             .timeout(responseTimeout);
         if (!current()) return;
-        final event = DevicePostureEvent.parse(
-            jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>);
+        final rawPayload = utf8.decode(bytes);
+        debugPrint('[PoiseBleService] FFE3 raw payload: $rawPayload');
+        final dynamic decodedJson = jsonDecode(rawPayload);
+        if (decodedJson is! Map<String, dynamic>) {
+          throw FormatException('Payload is not a JSON object: $rawPayload');
+        }
+        final event = DevicePostureEvent.parse(decodedJson); // parse event
+
         await (eventCommitter != null
             ? eventCommitter!(event)
             : PoiseLocalDatabase.instance.commitDeviceEvent(event));
@@ -285,6 +291,7 @@ class PoiseBleService extends ChangeNotifier {
         if (pendingEventCount > 0) pendingEventCount--;
       }
     } catch (error) {
+      debugPrint('[PoiseBleService] Stored events import stopped: $error');
       if (current()) {
         importError =
             'Import stopped: $error. Unacknowledged records remain on the device.';
