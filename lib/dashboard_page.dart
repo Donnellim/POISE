@@ -89,7 +89,7 @@ class _DashboardPageState extends State<DashboardPage> {
       }
     });
 
-    _isBluetoothConnected = PoiseBleService.instance.isConnected;
+    _isBluetoothConnected = widget.initialBluetoothConnected && PoiseBleService.instance.isConnected;
     _notificationPermissionGranted =
         widget.initialNotificationPermissionGranted;
     _vibrationEnabled = PoiseBleService.instance.isModeSynchronized

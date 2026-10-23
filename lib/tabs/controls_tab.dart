@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../widgets/poise_app_bar.dart';
@@ -36,6 +37,13 @@ class _ControlsTabState extends State<ControlsTab> {
   late bool _vibrationEnabled;
   late bool _notificationEnabled;
   late bool _notificationPermissionGranted;
+  StreamSubscription<bool>? _connectionSub;
+
+  bool get _isConnected =>
+      widget.isBluetoothConnected ?? PoiseBleService.instance.isConnected;
+
+  bool get _controlsEnabled =>
+      _isConnected && PoiseBleService.instance.controlsEnabled;
 
   @override
   void initState() {
@@ -44,6 +52,15 @@ class _ControlsTabState extends State<ControlsTab> {
     _notificationEnabled = widget.phoneNotificationEnabled ?? false;
     _notificationPermissionGranted =
         widget.notificationPermissionGranted ?? true;
+    PoiseBleService.instance.protocolChanges.addListener(_onDeviceStateChanged);
+    _connectionSub =
+        PoiseBleService.instance.isConnectedStream.listen((_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  void _onDeviceStateChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
@@ -62,6 +79,17 @@ class _ControlsTabState extends State<ControlsTab> {
             oldWidget.notificationPermissionGranted) {
       _notificationPermissionGranted = widget.notificationPermissionGranted!;
     }
+    if (widget.isBluetoothConnected != oldWidget.isBluetoothConnected) {
+      setState(() {});
+    }
+  }
+
+  @override
+  void dispose() {
+    PoiseBleService.instance.protocolChanges
+        .removeListener(_onDeviceStateChanged);
+    _connectionSub?.cancel();
+    super.dispose();
   }
 
   void _showNotificationPermissionDialog() {
@@ -251,7 +279,7 @@ class _ControlsTabState extends State<ControlsTab> {
 
   Widget _buildControlsContent(BuildContext context) {
     final mode = widget.selectedMode;
-    final enabled = PoiseBleService.instance.controlsEnabled;
+    final enabled = _controlsEnabled;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -269,14 +297,7 @@ class _ControlsTabState extends State<ControlsTab> {
         ),
         const SizedBox(height: 10),
 
-        if (PoiseBleService.instance.isConnected &&
-            !PoiseBleService.instance.isModeSynchronized &&
-            !PoiseBleService.instance.commandPending)
-          TextButton(
-              onPressed: () =>
-                  PoiseBleService.instance.syncSavedModeToHardware(),
-              child: const Text('Retry synchronization')),
-        // ── 1. Activity Mode Container ──
+        // -- 1. Activity Mode Container --
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           decoration: BoxDecoration(
@@ -294,48 +315,16 @@ class _ControlsTabState extends State<ControlsTab> {
                   fontWeight: FontWeight.bold,
                 ),
               ),
-              const SizedBox(height: 3),
-              Builder(
-                builder: (context) {
-                  final isConnected = widget.isBluetoothConnected ??
-                      PoiseBleService.instance.isConnected;
-                  return Row(
-                    key: const ValueKey('mode-sync-status-badge'),
-                    children: [
-                      Icon(
-                        isConnected
-                            ? Icons.cloud_done_rounded
-                            : Icons.cloud_off_rounded,
-                        size: 13,
-                        color: isConnected
-                            ? const Color(0xFF137333)
-                            : const Color(0xFF5F6368),
-                      ),
-                      const SizedBox(width: 4),
-                      Expanded(
-                        child: Text(
-                          isConnected
-                              ? (PoiseBleService.instance.protocolError ??
-                                  (PoiseBleService.instance.isModeSynchronized
-                                      ? 'Synced with POISE hardware (${widget.selectedMode.label} active)'
-                                      : 'Synchronizing device settings...'))
-                              : 'Device disconnected - Last known: ${widget.selectedMode.label}',
-                          style: TextStyle(
-                            color: isConnected
-                                ? const Color(0xFF137333)
-                                : const Color(0xFF273E4D),
-                            fontSize: 10.5,
-                            fontWeight: FontWeight.w600,
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                    ],
-                  );
-                },
+              const SizedBox(height: 2),
+              const Text(
+                'Select the mode based on what you are currently doing.',
+                style: TextStyle(
+                  color: Color(0xFF273E4D),
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w500,
+                ),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 10),
               Row(
                 children: [
                   Expanded(
@@ -583,27 +572,30 @@ class _ModeCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      behavior: HitTestBehavior.opaque,
-      child: Container(
-        height: 56,
-        decoration: BoxDecoration(
-          color: isSelected ? const Color(0xFFD6EEF8) : const Color(0xFFE8ECEF),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: isSelected ? const Color(0xFF388AF6) : Colors.transparent,
-            width: 2,
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.05),
-              blurRadius: 4,
-              offset: const Offset(0, 2),
+    final bool isEnabled = onTap != null;
+    return Opacity(
+      opacity: isEnabled ? 1.0 : 0.45,
+      child: GestureDetector(
+        onTap: onTap,
+        behavior: isEnabled ? HitTestBehavior.opaque : HitTestBehavior.deferToChild,
+        child: Container(
+          height: 56,
+          decoration: BoxDecoration(
+            color: isSelected ? const Color(0xFFD6EEF8) : const Color(0xFFE8ECEF),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: isSelected ? const Color(0xFF388AF6) : Colors.transparent,
+              width: 2,
             ),
-          ],
-        ),
-        child: Stack(
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.05),
+                blurRadius: 4,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: Stack(
           children: [
             Positioned(
               top: 5,
@@ -670,6 +662,7 @@ class _ModeCard extends StatelessWidget {
             ),
           ],
         ),
+      ),
       ),
     );
   }

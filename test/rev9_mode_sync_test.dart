@@ -37,6 +37,45 @@ void main() {
     ble.resetForTesting();
   });
 
+  testWidgets('Home QA: disconnected presentation and idle connection',
+      (tester) async {
+    PoiseLocalDatabase.instance.mockRecordsForTesting = [];
+    addTearDown(() => PoiseLocalDatabase.instance.mockRecordsForTesting = null);
+    tester.view.physicalSize = const Size(390, 1000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(const MaterialApp(
+        home: Scaffold(body: DashboardTab(activeMode: ActivityMode.normal))));
+    await tester.pump();
+    expect(find.text('Mode'), findsOneWidget);
+    expect(find.text('Session'), findsOneWidget);
+    expect(find.textContaining('Saved:'), findsNothing);
+    final summary = find.byKey(const ValueKey('active-mode-summary'));
+    expect(find.descendant(of: summary, matching: find.byType(Icon)), findsNothing);
+    expect(find.text('--:--:--'), findsOneWidget);
+    final toggle = find.byKey(const ValueKey('session-toggle'));
+    expect(tester.widget<GestureDetector>(toggle).onTap, isNull);
+    final background = tester.widget<Container>(
+        find.descendant(of: toggle, matching: find.byType(Container)).first);
+    expect((background.decoration as BoxDecoration).color, Colors.grey);
+    await tester.tap(toggle);
+    await tester.pump();
+    expect(commands, isEmpty);
+
+    await tester.runAsync(() => ble.connect(device));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 5));
+    expect(find.text('00:00:00'), findsOneWidget);
+    expect(find.text('Start Session'), findsOneWidget);
+    expect(find.text('Pause'), findsNothing);
+    expect(find.text('End Session'), findsNothing);
+    expect(tester.widget<GestureDetector>(toggle).onTap, isNotNull);
+    expect(find.descendant(of: summary, matching: find.byType(Icon)), findsOneWidget);
+    expect(commands, ['STATE:SYNC']);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   test(
       'connection only requests snapshot; disconnect preserves configuration and rejects commands',
       () async {
@@ -134,7 +173,7 @@ void main() {
       expect(find.text('00:00:14'), findsOneWidget);
       await ble.disconnect();
       await tester.pump(const Duration(seconds: 30));
-      expect(find.text('00:00:14'), findsOneWidget);
+      expect(find.text('--:--:--'), findsOneWidget);
       elapsed = 44000;
       await ble.connect(device);
       await tester.pump();
@@ -313,13 +352,13 @@ void main() {
       await tester.pump();
       expect(commands.where((c) => c == 'CALIBRATE').length, session + 1);
       expect(commands, isNot(contains('SESSION:START')));
-      expect(find.text('Session Running'), findsNothing);
+      expect(find.text('End Session'), findsNothing);
       ble.receiveMessage('STATE:CALIBRATING');
       await tester.pump(const Duration(seconds: 3));
       expect(find.text('00:00:00'), findsOneWidget);
       ble.receiveMessage('SESSION:STARTED');
       await tester.pump();
-      expect(find.text('Session Running'), findsOneWidget);
+      expect(find.text('End Session'), findsOneWidget);
       ble.receiveMessage('SESSION:ENDED');
       await tester.pumpAndSettle();
     }
@@ -373,7 +412,7 @@ void main() {
       }
       expect(commands, isNot(contains('CALIBRATE')));
       expect(commands, isNot(contains('SESSION:START')));
-      expect(find.text('Session Running'), findsNothing);
+      expect(find.text('End Session'), findsNothing);
       await tester.pumpWidget(const SizedBox());
     });
   }
@@ -394,8 +433,10 @@ void main() {
     final switches = tester.widgetList<Switch>(find.byType(Switch));
     expect(switches.first.value, isFalse);
     expect(switches.first.onChanged, isNull);
+    await tester.tap(find.byType(Switch).first);
     expect(changes, 0);
-    expect(find.textContaining('Device disconnected'), findsOneWidget);
+    expect(find.text('Select the mode based on what you are currently doing.'), findsOneWidget);
+    expect(find.text('Saved on phone'), findsNothing);
   });
   testWidgets(
       'dashboard follows firmware calibration, monitoring, disconnect and paused reconnect',
@@ -411,7 +452,7 @@ void main() {
         home:
             Scaffold(body: DashboardTab(activeMode: ActivityMode.commuting))));
     await tester.pump();
-    expect(find.text('Session Inactive'), findsOneWidget);
+    expect(find.text('Session'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('session-toggle')));
     await tester.pump();
     expect(commands, ['STATE:SYNC', 'CALIBRATION:READY']);
@@ -419,17 +460,17 @@ void main() {
     await tester.tap(find.text('Set Calibration'));
     await tester.pump();
     expect(commands, ['STATE:SYNC', 'CALIBRATION:READY', 'CALIBRATE']);
-    expect(find.text('Session Running'), findsNothing);
+    expect(find.text('End Session'), findsNothing);
     ble.receiveMessage('STATE:CALIBRATING');
     await tester.pump();
     expect(find.textContaining('Calibrating'), findsWidgets);
-    expect(find.text('Session Running'), findsNothing);
+    expect(find.text('End Session'), findsNothing);
     ble.receiveMessage('SESSION:STARTED');
     await tester.pump();
-    expect(find.text('Session Running'), findsOneWidget);
+    expect(find.text('End Session'), findsOneWidget);
     await tester.runAsync(() => ble.disconnect());
     await tester.pump();
-    expect(find.text('Session unavailable (disconnected)'), findsOneWidget);
+    expect(find.text('--:--:--'), findsOneWidget);
     expect(
         tester
             .widget<GestureDetector>(
@@ -441,7 +482,7 @@ void main() {
     };
     await tester.runAsync(() => ble.connect(device));
     await tester.pump();
-    expect(find.text('Session Paused'), findsOneWidget);
+    expect(find.text('Resume'), findsOneWidget);
     expect(find.text('Resume'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
