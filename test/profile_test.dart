@@ -42,7 +42,7 @@ void main() {
     expect(find.text('Bluetooth'), findsOneWidget);
     expect(find.text('Notifications'), findsOneWidget);
     expect(find.text('About'), findsOneWidget);
-    expect(find.text('Version 1.0.0'), findsOneWidget);
+    expect(find.textContaining('Version 1.0.0'), findsOneWidget);
     expect(find.text('Log Out'), findsOneWidget);
     expect(find.text('Delete Account'), findsOneWidget);
     expect(find.text('Delete All Data'), findsOneWidget);

@@ -124,8 +124,99 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
     return _localSessions;
   }
 
-  void _selectPeriod(AnalyticsPeriod period) =>
-      setState(() => _period = period);
+  void _selectPeriod(AnalyticsPeriod period) {
+    if (period == AnalyticsPeriod.month || period == AnalyticsPeriod.year) {
+      showDialog<void>(
+          context: context,
+          builder: (context) => AlertDialog(
+                backgroundColor: _panel,
+                title: const Text('Long-term history',
+                    style: TextStyle(color: _ink)),
+                content: const Text(
+                    '30 Days and This Year require a free account and connected cloud history. Cloud history is not connected in this build. You can view available records using Today or 7 Days.',
+                    style: TextStyle(color: _ink)),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('Got it'))
+                ],
+              ));
+      return;
+    }
+    setState(() => _period = period);
+  }
+
+  List<PostureRecord> _getCombinedRecords(DateTime now) {
+    final list = <PostureRecord>[];
+
+    // When finalized device events exist, keep only neutral wear records from local sessions
+    // so diagnostic/warning records do not inflate the finalized posture event count or duration.
+    if (_deviceEvents.isNotEmpty) {
+      for (final r in _localRecords) {
+        if (r.slouchEvents == 0) {
+          list.add(r);
+        }
+      }
+    } else {
+      list.addAll(_localRecords);
+    }
+
+    final seen = <String>{};
+    for (final e in _deviceEvents) {
+      final deviceId = e['device_id']?.toString() ?? '';
+      final eventId = e['event_id']?.toString() ?? '';
+      final dedupeKey = '$deviceId/$eventId';
+      if (seen.contains(dedupeKey)) {
+        continue;
+      }
+      seen.add(dedupeKey);
+
+      final startMs = e['start_time_ms'] as num?;
+      final endMs = e['end_time_ms'] as num?;
+      final at = (startMs != null && startMs > 100000000000)
+          ? DateTime.fromMillisecondsSinceEpoch(startMs.toInt(), isUtc: true)
+              .toLocal()
+          : (endMs != null && endMs > 100000000000
+              ? DateTime.fromMillisecondsSinceEpoch(endMs.toInt(), isUtc: true)
+                  .toLocal()
+              : now);
+      final correctedAt = endMs != null
+          ? DateTime.fromMillisecondsSinceEpoch(endMs.toInt(), isUtc: true)
+              .toLocal()
+          : null;
+      final correctionStatus = e['correction_status']?.toString();
+      final endReason = e['end_reason']?.toString();
+      final isCorrected = correctionStatus == 'corrected' ||
+          endReason == 'posture_corrected';
+      final corrSec = (isCorrected && startMs != null && endMs != null && endMs >= startMs)
+          ? (endMs - startMs) / 1000.0
+          : null;
+      final modeId = (e['mode_id'] as num?)?.toInt() ?? 1;
+      final mode = ModeModel.activityModeFromId(modeId);
+      final peakDev = (e['peak_deviation_deg'] as num?)?.toDouble() ?? 0.0;
+      final vibCount = (e['vibration_count'] as num?)?.toInt() ?? 0;
+      final feedback = (endReason == 'posture_corrected') || vibCount > 0;
+
+      list.add(PostureRecord(
+        at: at,
+        correctedAt: correctedAt,
+        seconds: 0,
+        pitch: peakDev,
+        mode: mode,
+        slouchEvents: 1,
+        warnings: vibCount,
+        correctionSeconds: corrSec,
+        eventId: eventId,
+        sessionId: e['session_id']?.toString(),
+        userId: e['owner_id']?.toString(),
+        feedbackTriggered: feedback,
+        endReason: endReason,
+        correctionStatus: correctionStatus,
+      ));
+    }
+    list.sort((a, b) => a.at.compareTo(b.at));
+    return list;
+  }
 
   Future<void> _syncImportedHistory() async {
     final user = SocialAuth.instance.user;
@@ -279,8 +370,9 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
     final now = widget.now?.call() ?? DateTime.now();
     final effectiveNow =
         _preview ? DateTime(now.year, now.month, now.day, 23, 59, 59) : now;
-    final activeRecords =
-        widget.records.isNotEmpty ? widget.records : _localRecords;
+    final activeRecords = widget.records.isNotEmpty
+        ? widget.records
+        : _getCombinedRecords(now);
     final summary = AnalyticsSummary(
         _preview ? sampleRecords(now) : activeRecords, _period, effectiveNow);
     return DefaultTextStyle(
@@ -295,29 +387,6 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
               Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             const PoiseHeader(),
             const SizedBox(height: 12),
-            if (_deviceEvents.isNotEmpty && SocialAuth.instance.user != null)
-              TextButton(
-                  onPressed: _syncImportedHistory,
-                  child: const Text('Sync imported history')),
-            if (_deviceEvents.isNotEmpty)
-              ExpansionTile(
-                title:
-                    Text('Imported posture events (${_deviceEvents.length})'),
-                subtitle: const Text(
-                    'Stored locally - Event history, not complete session history'),
-                children: [
-                  for (final event in _deviceEvents)
-                    ListTile(
-                      title: Text(
-                          'Mode ${event['mode_id']} - ${event['peak_deviation_deg']} degrees - ${event['correction_status']}'),
-                      subtitle: Text(
-                          '${event['start_time_ms'] == null ? 'Unknown start' : DateTime.fromMillisecondsSinceEpoch((event['start_time_ms'] as num).toInt(), isUtc: true).toLocal()}\n'
-                          '${event['end_time_ms'] == null ? 'Unknown end' : DateTime.fromMillisecondsSinceEpoch((event['end_time_ms'] as num).toInt(), isUtc: true).toLocal()} - ${event['end_reason']}\n'
-                          '${event['vibration_count']} commanded vibration pulses\n'
-                          '${event['start_time_ms'] != null && event['end_time_ms'] != null ? '${(((event['end_time_ms'] as num) - (event['start_time_ms'] as num)) / 1000)} seconds' : 'Duration unknown'}'),
-                    )
-                ],
-              ),
             const Text('Analysis',
                 style: TextStyle(
                   color: Color(0xFF0F1E29),
@@ -352,6 +421,12 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
                                   children: [
                                     Text(period.label,
                                         style: const TextStyle(fontSize: 10)),
+                                    if (period == AnalyticsPeriod.month ||
+                                        period == AnalyticsPeriod.year) ...[
+                                      const SizedBox(width: 2),
+                                      const Icon(Icons.lock,
+                                          size: 12, color: _ink)
+                                    ],
                                   ])),
                         )),
                   )),
@@ -368,7 +443,7 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
                     const SizedBox(width: 7),
                     const Expanded(
                         child: Text(
-                            'History is available locally without an account. Imported events do not describe complete offline sessions.',
+                            '30 Days and This Year require a free account to unlock long-term cloud history.',
                             style: TextStyle(fontSize: 8))),
                     IconButton(
                         tooltip: 'Dismiss history notice',
@@ -479,14 +554,14 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
             _ChartCard(
                 letter: 'B',
                 title: 'Time-in-Zone Ratio',
-                child: summary.records.isEmpty
+                child: summary.records.isEmpty || summary.totalSeconds == 0
                     ? const _EmptyChart()
                     : _ZoneChart(summary: summary)),
             const SizedBox(height: 10),
             _ChartCard(
                 letter: 'C',
                 title: 'Posture Deviation Trend',
-                child: summary.records.isEmpty
+                child: summary.records.isEmpty || summary.totalSeconds == 0
                     ? const _EmptyChart()
                     : _TrendChart(summary: summary)),
             const SizedBox(height: 10),
@@ -586,6 +661,16 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
                     ],
                   ],
                 )),
+            if (_deviceEvents.isNotEmpty && SocialAuth.instance.user != null) ...[
+              const SizedBox(height: 10),
+              Center(
+                child: TextButton.icon(
+                  onPressed: _syncImportedHistory,
+                  icon: const Icon(Icons.cloud_upload_outlined, size: 16),
+                  label: const Text('Sync imported history to cloud'),
+                ),
+              ),
+            ],
           ]),
         ),
       ),
@@ -1053,7 +1138,7 @@ class _SessionSummaryCard extends StatelessWidget {
               Expanded(
                 child: _MetricItem(
                   label: 'Peak Deviation',
-                  value: summary.records.isEmpty || summary.totalSeconds == 0
+                  value: summary.records.isEmpty
                       ? '—'
                       : '${maxDev.toStringAsFixed(1)}°',
                   caption: 'Maximum recorded tilt',
@@ -1276,7 +1361,23 @@ class _EventTimelineCard extends StatelessWidget {
     final timeStr =
         '${e.at.hour.toString().padLeft(2, '0')}:${e.at.minute.toString().padLeft(2, '0')}:${e.at.second.toString().padLeft(2, '0')}';
     final corrSec =
-        e.correctionSeconds ?? (e.seconds > 0 ? e.seconds.toDouble() : 2.5);
+        e.correctionSeconds ?? (e.seconds > 0 ? e.seconds.toDouble() : null);
+
+    final durText = corrSec != null
+        ? '${corrSec.toStringAsFixed(corrSec % 1 == 0 ? 0 : (corrSec * 10 % 1 == 0 ? 1 : 3))}s'
+        : 'Duration unknown';
+    final rawStatus = e.correctionStatus ??
+        ((e.slouched || e.slouchEvents > 0) ? 'Corrected' : 'Normal');
+    final statusText = rawStatus.isNotEmpty
+        ? '${rawStatus[0].toUpperCase()}${rawStatus.substring(1)}'
+        : 'Corrected';
+    final reasonText = e.endReason != null && e.endReason!.isNotEmpty
+        ? ' (${e.endReason})'
+        : '';
+    final vibCount = e.warnings;
+    final vibText = vibCount > 0
+        ? ' • $vibCount commanded vibration pulse${vibCount == 1 ? '' : 's'}'
+        : '';
 
     return Container(
       margin: const EdgeInsets.only(bottom: 6),
@@ -1320,7 +1421,7 @@ class _EventTimelineCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 1),
                 Text(
-                  'Corrected in ${corrSec.toStringAsFixed(1)}s (Confirmed)',
+                  '$statusText in $durText$reasonText$vibText',
                   style: const TextStyle(
                       fontSize: 8,
                       color: Color(0xFF509E2F),
