@@ -278,4 +278,126 @@ void main() {
       await db.close();
     }
   });
+
+  test('exact Step 21 firmware payload parses, commits to SQLite, and deduplicates without conflict', () async {
+    final payload = {
+      'schema_version': 1,
+      'event_id': 2132996330,
+      'device_id': 'POISE-A560D578',
+      'session_id': 2548296016,
+      'start_time_ms': 1792754469621,
+      'end_time_ms': 1792754476627,
+      'timestamp_status': 'synced',
+      'mode_id': 1,
+      'peak_deviation_deg': 29.1,
+      'vibration_count': 1,
+      'correction_status': 'corrected',
+      'end_reason': 'posture_corrected',
+      'is_final': true
+    };
+    final event = DevicePostureEvent.parse(payload);
+    expect(event.eventId, '2132996330');
+    expect(event.sessionId, '2548296016');
+    expect(event.deviceId, 'POISE-A560D578');
+    expect(event.durationMs, 7006);
+
+    final local = PoiseLocalDatabase.instance;
+    final db = await local.init(customPath: ':memory:');
+    try {
+      await local.commitDeviceEvent(event);
+      // Retry scenario: exactly same event re-imported
+      await local.commitDeviceEvent(event);
+      final events = await local.getDeviceEvents();
+      expect(events, hasLength(1));
+      expect(events.first['event_id'].toString(), '2132996330');
+      expect(events.first['peak_deviation_deg'], 29.1);
+      expect(events.first['vibration_count'], 1);
+      expect(events.first['correction_status'], 'corrected');
+      expect(events.first['end_reason'], 'posture_corrected');
+    } finally {
+      await db.close();
+    }
+  });
+
+  test('guest mode imports exact Step 21 event, acknowledges with event_id, and handles retry without duplicates', () async {
+    final payload = {
+      'schema_version': 1,
+      'event_id': 2132996330,
+      'device_id': 'POISE-A560D578',
+      'session_id': 2548296016,
+      'start_time_ms': 1792754469621,
+      'end_time_ms': 1792754476627,
+      'timestamp_status': 'synced',
+      'mode_id': 1,
+      'peak_deviation_deg': 29.1,
+      'vibration_count': 1,
+      'correction_status': 'corrected',
+      'end_reason': 'posture_corrected',
+      'is_final': true
+    };
+
+    final local = PoiseLocalDatabase.instance;
+    await local.init(customPath: ':memory:');
+    try {
+      ble.eventReader = () async => utf8.encode(jsonEncode(payload));
+      ble.eventCommitter = null;
+
+      await ble.connect(device);
+      await ble.importStoredEvents();
+
+      expect(ble.importError, isNull);
+      expect(commands, contains('EVENTLOG:ACK:2132996330'));
+
+      // Retry import
+      nextCount = 0;
+      await ble.importStoredEvents();
+      expect(ble.importError, isNull);
+
+      final events = await local.getDeviceEvents();
+      expect(events, hasLength(1));
+    } finally {
+      await local.close();
+    }
+  });
+
+  testWidgets('guest mode renders exact Step 21 event in SQLite-backed AnalyticsTab', (tester) async {
+    final payload = {
+      'schema_version': 1,
+      'event_id': 2132996330,
+      'device_id': 'POISE-A560D578',
+      'session_id': 2548296016,
+      'start_time_ms': 1792754469621,
+      'end_time_ms': 1792754476627,
+      'timestamp_status': 'synced',
+      'mode_id': 1,
+      'peak_deviation_deg': 29.1,
+      'vibration_count': 1,
+      'correction_status': 'corrected',
+      'end_reason': 'posture_corrected',
+      'is_final': true
+    };
+
+    final local = PoiseLocalDatabase.instance;
+    await tester.runAsync(() async {
+      await local.init(customPath: ':memory:');
+      await local.commitDeviceEvent(DevicePostureEvent.parse(payload));
+    });
+
+    await tester.runAsync(() async {
+      await tester.pumpWidget(const MaterialApp(home: Scaffold(body: AnalyticsTab())));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    });
+    await tester.pumpAndSettle();
+
+    expect(find.text('Imported posture events (1)'), findsOneWidget);
+    await tester.tap(find.text('Imported posture events (1)'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Mode 1 - 29.1 degrees - corrected'), findsOneWidget);
+    expect(find.textContaining('posture_corrected'), findsOneWidget);
+    expect(find.textContaining('1 commanded vibration pulses'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.runAsync(() => local.close());
+  });
 }

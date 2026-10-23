@@ -118,11 +118,28 @@ class PoiseLocalDatabase {
     final db = await database;
     await db.transaction((txn) async {
       final rows = await txn.query('device_posture_events',
-          where: 'device_id = ? AND event_id = ?',
-          whereArgs: [event.data['device_id'], event.eventId]);
+          where: 'device_id = ? AND (event_id = ? OR event_id = ?)',
+          whereArgs: [
+            event.data['device_id'],
+            event.eventId,
+            event.data['event_id']
+          ]);
       if (rows.isNotEmpty) {
-        if (DevicePostureEvent.fields
-            .any((key) => rows.first[key] != event.data[key])) {
+        bool fieldsMatch(String key) {
+          final existing = rows.first[key];
+          final incoming = event.data[key];
+          if (existing == incoming) return true;
+          if (existing is num && incoming is num) {
+            return (existing - incoming).abs() < 0.00001;
+          }
+          if (existing != null && incoming != null) {
+            return existing.toString() == incoming.toString();
+          }
+          return false;
+        }
+
+        if (DevicePostureEvent.fields.any((key) => !fieldsMatch(key))) { // match check
+
           throw StateError(
               'Conflicting posture event: ${event.data['device_id']}/${event.eventId}');
         }

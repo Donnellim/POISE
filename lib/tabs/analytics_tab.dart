@@ -311,10 +311,10 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
                       title: Text(
                           'Mode ${event['mode_id']} - ${event['peak_deviation_deg']} degrees - ${event['correction_status']}'),
                       subtitle: Text(
-                          '${event['start_time_ms'] == null ? 'Unknown start' : DateTime.fromMillisecondsSinceEpoch(event['start_time_ms'] as int, isUtc: true).toLocal()}\n'
-                          '${event['end_time_ms'] == null ? 'Unknown end' : DateTime.fromMillisecondsSinceEpoch(event['end_time_ms'] as int, isUtc: true).toLocal()} - ${event['end_reason']}\n'
+                          '${event['start_time_ms'] == null ? 'Unknown start' : DateTime.fromMillisecondsSinceEpoch((event['start_time_ms'] as num).toInt(), isUtc: true).toLocal()}\n'
+                          '${event['end_time_ms'] == null ? 'Unknown end' : DateTime.fromMillisecondsSinceEpoch((event['end_time_ms'] as num).toInt(), isUtc: true).toLocal()} - ${event['end_reason']}\n'
                           '${event['vibration_count']} commanded vibration pulses\n'
-                          '${event['start_time_ms'] != null && event['end_time_ms'] != null ? '${((event['end_time_ms'] as int) - (event['start_time_ms'] as int)) / 1000} seconds' : 'Duration unknown'}'),
+                          '${event['start_time_ms'] != null && event['end_time_ms'] != null ? '${(((event['end_time_ms'] as num) - (event['start_time_ms'] as num)) / 1000)} seconds' : 'Duration unknown'}'),
                     )
                 ],
               ),
