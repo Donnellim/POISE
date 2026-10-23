@@ -260,13 +260,22 @@ class PoiseBleService extends ChangeNotifier {
                         StateError('Readable FFE3 unavailable')))
             .timeout(responseTimeout);
         if (!current()) return;
-        final rawPayload = utf8.decode(bytes);
+        final rawPayload = utf8.decode(bytes, allowMalformed: true);
         debugPrint('[PoiseBleService] FFE3 raw payload: $rawPayload');
-        final dynamic decodedJson = jsonDecode(rawPayload);
-        if (decodedJson is! Map<String, dynamic>) {
-          throw FormatException('Payload is not a JSON object: $rawPayload');
+        final cleanPayload =
+            rawPayload.trim().replaceAll(RegExp(r'[\x00\r\n]+$'), '');
+        dynamic decodedJson;
+        try {
+          decodedJson = jsonDecode(cleanPayload);
+        } catch (e) {
+          throw FormatException(
+              'Malformed JSON syntax on FFE3: $e. Raw: "$rawPayload"');
         }
-        final event = DevicePostureEvent.parse(decodedJson); // parse event
+        if (decodedJson is! Map<String, dynamic>) {
+          throw FormatException('FFE3 JSON is not an object: "$cleanPayload"');
+        }
+        final event =
+            DevicePostureEvent.parse(decodedJson, rawPayload: cleanPayload);
 
         await (eventCommitter != null
             ? eventCommitter!(event)
