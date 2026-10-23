@@ -199,9 +199,10 @@ void main() {
 
       // Prepopulate past sessions (e.g. 1 hour of wear time in Analytics)
       final now = DateTime.now();
+      final todayStart = DateTime(now.year, now.month, now.day);
       PoiseLocalDatabase.instance.mockRecordsForTesting = [
         PostureRecord(
-          at: now.subtract(const Duration(hours: 1)),
+          at: todayStart.add(const Duration(minutes: 1)),
           seconds: 3600,
           pitch: 0.0,
           mode: ActivityMode.normal,

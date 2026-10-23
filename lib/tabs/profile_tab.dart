@@ -1034,10 +1034,12 @@ class _ProfileTabState extends State<ProfileTab> {
                   ),
                 ),
                 const SizedBox(height: 12),
-                const Text(
-                  'Are you sure you want to delete all your data?\nThis will permanently delete all your saved posture data, records, and history. This action cannot be undone.',
+                Text(
+                  _isGuest
+                      ? 'Are you sure you want to delete all local posture data?\nThis permanently deletes all saved posture events and session records stored on this phone. Hardware logs on the POISE device are not cleared. This action cannot be undone.'
+                      : 'Are you sure you want to delete all posture data?\nThis permanently deletes all your saved posture events and session history on this phone and in cloud storage. Hardware logs on the POISE device are not cleared. This action cannot be undone.',
                   textAlign: TextAlign.center,
-                  style: TextStyle(
+                  style: const TextStyle(
                     color: Color(0xFF0F1E29),
                     fontSize: 13,
                     height: 1.45,
@@ -1623,7 +1625,7 @@ class _ProfileTabState extends State<ProfileTab> {
                     ),
                     const SizedBox(height: 12),
                     const Text(
-                      'Version 1.0.0+4',
+                      'Version 1.0.0+5',
                       style: TextStyle(
                         color: Color(0xFF0F1E29),
                         fontSize: 11,

@@ -134,6 +134,12 @@ class PoiseBleService extends ChangeNotifier {
   ChangeNotifier get protocolChanges => this;
   PoiseDeviceState deviceState = PoiseDeviceState.idle;
   bool vibrationEnabled = true;
+
+  /// Effective vibration state: defaults to ON when disconnected.
+  bool get effectiveVibration => !isConnected ? true : vibrationEnabled;
+
+  final _hardwarePostureController = StreamController<String>.broadcast();
+  Stream<String> get hardwarePostureStream => _hardwarePostureController.stream;
   String? protocolError;
   bool _receivedState = false;
   bool _receivedSession = false;
@@ -194,7 +200,13 @@ class PoiseBleService extends ChangeNotifier {
     await synchronizeClock();
     if (!isConnected) return;
     await syncSavedModeToHardware();
-    if (isConnected) await checkStoredEvents();
+    if (isConnected) {
+      if (FeedbackPreferences.hasExplicitVibrationPreference &&
+          FeedbackPreferences.vibration != vibrationEnabled) {
+        await sendVibrationCommand(FeedbackPreferences.vibration);
+      }
+      await checkStoredEvents();
+    }
   }
 
   Future<bool> checkStoredEvents() =>
@@ -325,10 +337,13 @@ class PoiseBleService extends ChangeNotifier {
     vibrationEnabled = vibration;
     _modeStreamController.add(mode);
     unawaited(ModePreferences.saveMode(mode));
-    unawaited(FeedbackPreferences.saveVibration(vibration));
   }
 
   bool _handleProtocol(String message) {
+    if (message.startsWith('POSTURE:') || message.startsWith('SLOUCH:')) {
+      _hardwarePostureController.add(message);
+      return true;
+    }
     if (message.startsWith('TIME:SYNC:') || message.startsWith('EVENTLOG:')) {
       if (message == 'EVENTLOG:RECORD_READY' &&
           importing &&
@@ -475,7 +490,10 @@ class PoiseBleService extends ChangeNotifier {
         _pending!.complete(true);
       }
     }
-    _changed();
+    // Suppress partial intermediate renders while awaiting multi-part STATE:SYNC
+    if (!(_activeCommand == 'STATE:SYNC' && !_snapshotComplete)) {
+      _changed();
+    }
     return true;
   }
 
@@ -1546,7 +1564,12 @@ class PoiseBleService extends ChangeNotifier {
     if (!controlsEnabled) return false;
     final value = enabled ? 1 : 0;
     final success = await _exchange('VIB:$value', {'VIB:APPLIED:$value'});
-    if (!success && isConnected) unawaited(_recoverAfterCommandFailure());
+    if (success) {
+      vibrationEnabled = enabled;
+      unawaited(FeedbackPreferences.saveVibration(enabled));
+    } else if (isConnected) {
+      unawaited(_recoverAfterCommandFailure());
+    }
     return success;
   }
 
@@ -1643,6 +1666,8 @@ class PoiseBleService extends ChangeNotifier {
     _hardwareActiveMode = ActivityMode.normal;
     _phoneSavedMode = ActivityMode.normal;
     ModePreferences.resetForTesting();
+    FeedbackPreferences.hasExplicitVibrationPreference = false;
+    FeedbackPreferences.vibration = true;
     _isModeSynchronized = false;
     _lastSentModeCommand = null;
     simulateQuickSettingsSynced = false;
@@ -1670,6 +1695,7 @@ class PoiseBleService extends ChangeNotifier {
     _deviceSessionSecondsController.close();
     _deviceSessionActionController.close();
     _batteryLevelController.close();
+    _hardwarePostureController.close();
     _modeSyncController.close();
     _modeStreamController.close();
     super.dispose();

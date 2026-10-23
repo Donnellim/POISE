@@ -113,9 +113,7 @@ void main() {
       await tester.tap(find.byTooltip('Dismiss history notice'));
       await tester.pumpAndSettle();
       expect(find.byTooltip('Dismiss history notice'), findsNothing);
-      await tester.tap(find.text('Preview charts'));
-      await tester.pumpAndSettle();
-      expect(find.text('SAMPLE PREVIEW • Not your readings'), findsOneWidget);
+      expect(find.text('Preview charts'), findsNothing);
       expect(find.byType(BarChart), findsOneWidget);
       expect(find.byType(PieChart), findsOneWidget);
       expect(find.byType(LineChart), findsOneWidget);
@@ -123,7 +121,7 @@ void main() {
           find.byKey(const ValueKey('export-csv')), 250);
       await tester.tap(find.byKey(const ValueKey('export-csv')));
       await tester.pumpAndSettle();
-      expect(copiedCsv, contains('"sample"'));
+      expect(copiedCsv, contains('"measured"'));
       expect(tester.takeException(), isNull);
     });
   }
@@ -154,13 +152,12 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('Today preview mode generates and displays charts',
+  testWidgets('Analytics with records displays real charts and no preview controls',
       (tester) async {
     await tester.pumpWidget(
-        MaterialApp(home: Scaffold(body: AnalyticsTab(now: () => now))));
-    expect(find.byType(BarChart), findsNothing);
-    await tester.tap(find.text('Preview charts'));
+        MaterialApp(home: Scaffold(body: AnalyticsTab(records: records, now: () => now))));
     await tester.pumpAndSettle();
+    expect(find.text('Preview charts'), findsNothing);
     expect(find.byType(BarChart), findsOneWidget);
     expect(find.byType(PieChart), findsOneWidget);
     expect(find.byType(LineChart), findsOneWidget);

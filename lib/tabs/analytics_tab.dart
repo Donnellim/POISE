@@ -28,7 +28,6 @@ class AnalyticsTab extends StatefulWidget {
 class _AnalyticsTabState extends State<AnalyticsTab> {
   AnalyticsPeriod _period = AnalyticsPeriod.today;
   bool _showInfo = true;
-  bool _preview = false;
   bool _exporting = false;
   List<PostureRecord> _localRecords = [];
   List<Map<String, dynamic>> _deviceEvents = [];
@@ -99,29 +98,21 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
   }
 
   List<SessionModel> _getEffectiveSessions(DateTime now) {
-    if (_preview) {
-      return [
-        SessionModel(
-          id: 'sample_sess_1',
-          userId: 'preview',
-          modeId: 2, // Study / Focus
-          startedAt: now.subtract(const Duration(hours: 3)),
-          endedAt: now.subtract(const Duration(hours: 2, minutes: 15)),
-          updatedAt: now.subtract(const Duration(hours: 2, minutes: 15)),
-          baselineAngle: 0.0,
-        ),
-        SessionModel(
-          id: 'sample_sess_2',
-          userId: 'preview',
-          modeId: 1, // Default / Normal
-          startedAt: now.subtract(const Duration(hours: 1, minutes: 30)),
-          endedAt: now.subtract(const Duration(minutes: 30)),
-          updatedAt: now.subtract(const Duration(minutes: 30)),
-          baselineAngle: 1.5,
-        ),
-      ];
-    }
-    return _localSessions;
+    return _localSessions.where((s) {
+      final diff = now.difference(s.startedAt);
+      switch (_period) {
+        case AnalyticsPeriod.today:
+          return s.startedAt.year == now.year &&
+              s.startedAt.month == now.month &&
+              s.startedAt.day == now.day;
+        case AnalyticsPeriod.week:
+          return diff.inDays < 7 && !diff.isNegative;
+        case AnalyticsPeriod.month:
+          return diff.inDays < 30 && !diff.isNegative;
+        case AnalyticsPeriod.year:
+          return diff.inDays < 365 && !diff.isNegative;
+      }
+    }).toList();
   }
 
   void _selectPeriod(AnalyticsPeriod period) {
@@ -259,8 +250,8 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
     setState(() => _exporting = true);
     try {
       final date = summary.now.toIso8601String().split('T').first;
-      final message = await exportCsv(summary.csv(sample: _preview),
-          'poise-${_preview ? 'sample-' : ''}${_period.name}-$date.csv');
+      final message = await exportCsv(summary.csv(sample: false),
+          'poise-${_period.name}-$date.csv');
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text(message),
@@ -368,13 +359,10 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
   @override
   Widget build(BuildContext context) {
     final now = widget.now?.call() ?? DateTime.now();
-    final effectiveNow =
-        _preview ? DateTime(now.year, now.month, now.day, 23, 59, 59) : now;
     final activeRecords = widget.records.isNotEmpty
         ? widget.records
         : _getCombinedRecords(now);
-    final summary = AnalyticsSummary(
-        _preview ? sampleRecords(now) : activeRecords, _period, effectiveNow);
+    final summary = AnalyticsSummary(activeRecords, _period, now);
     return DefaultTextStyle(
       style: const TextStyle(color: _ink, fontSize: 12, fontFamily: 'Roboto'),
       child: Padding(
@@ -452,31 +440,23 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
                   ])),
               const SizedBox(height: 9),
             ],
-            Container(
-                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
-                decoration: BoxDecoration(
-                    color: _panel.withValues(alpha: 0.8),
-                    borderRadius: BorderRadius.circular(4)),
-                child: Row(children: [
-                  Expanded(
-                      child: Text(
-                          _preview
-                              ? 'SAMPLE PREVIEW • Not your readings'
-                              : activeRecords.isEmpty
-                                  ? 'No recorded sensor data yet'
-                                  : 'Recorded sensor data',
-                          style: const TextStyle(
-                              fontSize: 9, fontWeight: FontWeight.w600))),
-                  TextButton(
-                      onPressed: () => setState(() => _preview = !_preview),
-                      style: TextButton.styleFrom(
-                          foregroundColor: _ink,
-                          minimumSize: const Size(0, 28),
-                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                          padding: const EdgeInsets.symmetric(horizontal: 6)),
-                      child: Text(_preview ? 'Exit preview' : 'Preview charts',
-                          style: const TextStyle(fontSize: 9))),
-                ])),
+            if (activeRecords.isEmpty) ...[
+              Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
+                  decoration: BoxDecoration(
+                      color: _panel.withValues(alpha: 0.8),
+                      borderRadius: BorderRadius.circular(4)),
+                  child: Row(children: const [
+                    Icon(Icons.info_outline, size: 14, color: _ink),
+                    SizedBox(width: 6),
+                    Expanded(
+                        child: Text(
+                            'No recorded sensor data yet',
+                            style: TextStyle(
+                                fontSize: 9, fontWeight: FontWeight.w600))),
+                  ])),
+              const SizedBox(height: 9),
+            ],
             const SizedBox(height: 9),
             Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Expanded(
@@ -605,9 +585,7 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
                             Text(
                                 summary.records.isEmpty
                                     ? 'No sensor readings recorded for this period.'
-                                    : _preview
-                                        ? 'Sample records for the selected period.'
-                                        : 'Telemetry and posture events for this period.',
+                                    : 'Telemetry and posture events for this period.',
                                 style: const TextStyle(fontSize: 9)),
                           ])),
                       const SizedBox(width: 6),

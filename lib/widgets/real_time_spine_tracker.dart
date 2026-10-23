@@ -37,24 +37,25 @@ class RealTimeSpineTracker extends StatelessWidget {
     final double angle = isConnected ? pitchAngle.abs() : 0.0;
     final double threshold = activeMode.angle.toDouble();
 
-    // Mode-specific threshold and forgiveness dwell evaluation
-    final bool effectiveAlert = isConnected &&
-        (isSlouchAlert || angle > threshold + 8.0);
+    // Mode-specific threshold and dwell evaluation
+    final bool effectiveAlert = isConnected && isSlouchAlert;
     final bool effectiveWarning = isConnected &&
         !effectiveAlert &&
         (isSlouchWarning || angle > threshold);
+    final bool effectiveNormal =
+        isConnected && !effectiveAlert && !effectiveWarning;
 
     final Color glowColor = effectiveAlert
-        ? const Color(0xFFFF1744) // Exceeded forgiveness time: Glowing Red
+        ? const Color(0xFFFF1744) // Exceeded dwell time: Glowing Red
         : effectiveWarning
-            ? const Color(0xFFFF9100) // Counting forgiveness time: Glowing Orange
-            : Colors.transparent;
+            ? const Color(0xFFFF9100) // Within dwell time: Glowing Orange
+            : const Color(0xFF00E676); // Within threshold: Soft Green
 
     final String? glowKey = effectiveAlert
         ? 'neck-glow-alert'
         : effectiveWarning
             ? 'neck-glow-warning'
-            : null;
+            : (effectiveNormal ? 'neck-glow-optimal' : null);
 
     return SizedBox(
       width: 220,
@@ -63,9 +64,10 @@ class RealTimeSpineTracker extends StatelessWidget {
         alignment: Alignment.bottomCenter,
         children: [
           // ── 1. Soft Ambient Halo Behind the Neck (C7–T1 Region) ──
-          // Orange when angle exceeds mode threshold while forgiveness timer is counting.
-          // Red when slouch dwell duration exceeds the mode's forgiveness time.
-          // Invisible (transparent) when posture is within optimal range.
+          // Green: Absolute posture deviation is within current mode's threshold.
+          // Orange: Deviation exceeds mode threshold, dwell time not yet elapsed.
+          // Red: Posture-warning event confirmed after dwell requirement met.
+          // Transparent when disconnected.
           if (glowKey != null)
             Positioned(
               left: 78,
@@ -79,8 +81,18 @@ class RealTimeSpineTracker extends StatelessWidget {
                   shape: BoxShape.circle,
                   gradient: RadialGradient(
                     colors: [
-                      glowColor.withValues(alpha: effectiveAlert ? 0.90 : 0.75),
-                      glowColor.withValues(alpha: effectiveAlert ? 0.45 : 0.30),
+                      glowColor.withValues(
+                          alpha: effectiveAlert
+                              ? 0.90
+                              : effectiveWarning
+                                  ? 0.75
+                                  : 0.50),
+                      glowColor.withValues(
+                          alpha: effectiveAlert
+                              ? 0.45
+                              : effectiveWarning
+                                  ? 0.30
+                                  : 0.15),
                       Colors.transparent,
                     ],
                     stops: const [0.0, 0.55, 1.0],
@@ -110,7 +122,12 @@ class RealTimeSpineTracker extends StatelessWidget {
                     shape: BoxShape.circle,
                     gradient: RadialGradient(
                       colors: [
-                        glowColor.withValues(alpha: effectiveAlert ? 0.55 : 0.40),
+                        glowColor.withValues(
+                            alpha: effectiveAlert
+                                ? 0.55
+                                : effectiveWarning
+                                    ? 0.40
+                                    : 0.25),
                         Colors.transparent,
                       ],
                       stops: const [0.0, 1.0],
