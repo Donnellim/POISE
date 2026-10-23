@@ -2030,40 +2030,14 @@ class _DashboardTabState extends State<DashboardTab> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text(
-                    'CURRENT MODE',
-                    style: TextStyle(
-                      color: Colors.black87,
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 0.5,
-                    ),
-                  ),
-                  Flexible(
-                    child: Text(
-                      _canMonitor
-                          ? (PoiseBleService.instance.isModeSynchronized
-                              ? 'Hardware Synced'
-                              : 'Syncing Mode...')
-                          : 'Saved: ${widget.activeMode.label}',
-                      style: TextStyle(
-                        color: _canMonitor
-                            ? (PoiseBleService.instance.isModeSynchronized
-                                ? const Color(0xFF1B5E20)
-                                : Colors.orange[900])
-                            : Colors.black54,
-                        fontSize: 9.5,
-                        fontWeight: FontWeight.bold,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      textAlign: TextAlign.right,
-                    ),
-                  ),
-                ],
+              const Text(
+                'Mode',
+                style: TextStyle(
+                  color: Colors.black87,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 0.5,
+                ),
               ),
               const SizedBox(height: 8),
               IntrinsicHeight(
@@ -2091,8 +2065,10 @@ class _DashboardTabState extends State<DashboardTab> {
                                   color: const Color(0xFF67D1E0),
                                   borderRadius: BorderRadius.circular(8),
                                 ),
-                                child: Icon(widget.activeMode.icon,
-                                    color: Colors.white, size: 20),
+                                child: PoiseBleService.instance.isConnected
+                                    ? Icon(widget.activeMode.icon,
+                                        color: Colors.white, size: 20)
+                                    : null,
                               ),
                               const SizedBox(width: 8),
                               Expanded(
@@ -2217,16 +2193,7 @@ class _DashboardTabState extends State<DashboardTab> {
                       fit: BoxFit.scaleDown,
                       alignment: Alignment.centerLeft,
                       child: Text(
-                        !PoiseBleService.instance.isConnected
-                            ? 'Session unavailable (disconnected)'
-                            : _isSessionRunning
-                                ? (_isSessionPaused
-                                    ? 'Session Paused'
-                                    : 'Session Running')
-                                : (PoiseBleService.instance.deviceState ==
-                                        PoiseDeviceState.calibrating
-                                    ? 'Calibrating... Hold still (about 3 seconds)'
-                                    : 'Session Inactive'),
+                        'Session',
                         style: const TextStyle(
                             color: Colors.black54,
                             fontSize: 11,
@@ -2235,7 +2202,9 @@ class _DashboardTabState extends State<DashboardTab> {
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      _formatDuration(_sessionSeconds),
+                      PoiseBleService.instance.isConnected
+                          ? _formatDuration(_sessionSeconds)
+                          : '--:--:--',
                       style: const TextStyle(
                           color: Colors.black,
                           fontSize: 14,
@@ -2303,9 +2272,11 @@ class _DashboardTabState extends State<DashboardTab> {
                   padding:
                       const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
                   decoration: BoxDecoration(
-                    color: _isSessionRunning
-                        ? const Color(0xFFD32F2F)
-                        : const Color(0xFF2E7D32),
+                    color: !PoiseBleService.instance.sessionControlsEnabled
+                        ? Colors.grey
+                        : _isSessionRunning
+                            ? const Color(0xFFD32F2F)
+                            : const Color(0xFF2E7D32),
                     borderRadius: BorderRadius.circular(16),
                     boxShadow: [
                       BoxShadow(

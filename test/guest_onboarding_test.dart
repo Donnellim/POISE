@@ -177,7 +177,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(requests, 2);
     expect(find.text('Device Connected'), findsOneWidget);
-    expect(find.text('Session Inactive'), findsOneWidget);
+    expect(find.text('Session'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
     await ble.disconnect();
   });

@@ -95,7 +95,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('--°'), findsOneWidget);
     expect(find.text(ActivityMode.commuting.threshold), findsOneWidget);
-    expect(find.text('00:00:00'), findsOneWidget);
+    expect(find.text('--:--:--'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
   });
@@ -170,7 +170,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Not Connected'), findsOneWidget);
     await tester.pump(const Duration(seconds: 5));
-    expect(find.text('00:00:00'), findsOneWidget);
+    expect(find.text('--:--:--'), findsOneWidget);
     await tester.tap(find.text('Not Connected'));
     await tester.pumpAndSettle();
     expect(find.byType(GetStartedPage), findsNothing);

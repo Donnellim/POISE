@@ -88,7 +88,7 @@ void main() {
     // Verify POISE device is disconnected on Dashboard
     expect(find.text('Not Connected'), findsOneWidget);
     expect(find.text('--°'), findsOneWidget);
-    expect(find.text('00:00:00'), findsOneWidget);
+    expect(find.text('--:--:--'), findsOneWidget);
   });
 
   testWidgets(
@@ -161,7 +161,7 @@ void main() {
 
     // Active monitoring restored on Dashboard
     expect(find.text('Device Connected'), findsOneWidget);
-    expect(find.text('Session Inactive'), findsOneWidget);
+    expect(find.text('Session'), findsOneWidget);
     expect(find.text('PITCH ANGLE'), findsOneWidget);
     expect(find.text('Optimal Posture'), findsNothing);
   });

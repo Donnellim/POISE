@@ -230,7 +230,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 200));
 
       // Session status must show Inactive and timer must read 00:00:00 (NOT 01:00:00!)
-      expect(find.text('Session Inactive'), findsOneWidget);
+      expect(find.text('Session'), findsOneWidget);
       expect(find.text('00:00:00'), findsOneWidget);
       expect(find.text('01:00:00'), findsNothing);
       expect(find.text('Start Session'), findsOneWidget);
@@ -265,7 +265,7 @@ void main() {
       // Session is now running
       await tester.tap(find.text('Set Calibration'));
       await tester.pump();
-      expect(find.text('Session Running'), findsOneWidget);
+      expect(find.text('End Session'), findsOneWidget);
       expect(find.text('End Session'), findsOneWidget);
 
       // Wait 2 seconds
@@ -281,7 +281,7 @@ void main() {
       await tester.pump(const Duration(seconds: 3));
 
       // Timer resets strictly to 00:00:00 and displays Session Inactive
-      expect(find.text('Session Inactive'), findsOneWidget);
+      expect(find.text('Session'), findsOneWidget);
       expect(find.text('00:00:00'), findsOneWidget);
       expect(find.text('Start Session'), findsOneWidget);
       await tester.pumpWidget(const SizedBox());
